@@ -11,7 +11,7 @@ import pendulum
 from airflow.providers.standard.operators.bash import BashOperator
 from airflow.sdk import DAG, TriggerRule
 from airflow.sdk.definitions.param import Param
-from common import DEFAULT_ARGS, INGEST_POOL, ingest_command, record_ops_command
+from common import DEFAULT_ARGS, INGEST_POOL, ingest_command, record_ops_command, run_verdict
 
 with DAG(
     dag_id="pylon_backfill",
@@ -83,3 +83,4 @@ with DAG(
     )
 
     backfill >> verify_raw >> record_ops
+    [verify_raw, record_ops] >> run_verdict()

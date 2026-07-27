@@ -69,6 +69,31 @@ def test_dlt_runs_are_serialized_by_the_pool(dagbag, dag_id):
     assert dag.max_active_runs == 1
 
 
+PIPELINE_DAGS = ["pylon_ingest_hourly", "pylon_backfill", "pylon_reconcile_weekly"]
+
+
+@pytest.mark.parametrize("dag_id", PIPELINE_DAGS)
+def test_a_failed_task_turns_the_run_red(dagbag, dag_id):
+    """Airflow derives dag_run state from leaf tasks only. record_ops runs on
+    ALL_DONE and effectively cannot fail, so while it was the sole leaf every run
+    reported success — ingest died with a missing API key three hours running and
+    the DAG called it green each time."""
+    from airflow.task.trigger_rule import TriggerRule
+
+    dag = dagbag.dags[dag_id]
+    leaves = [task for task in dag.tasks if not task.downstream_task_ids]
+
+    assert [task.task_id for task in leaves] == ["run_verdict"], \
+        f"{dag_id}: the run's verdict must come from one task that reflects real failures"
+    assert leaves[0].trigger_rule == TriggerRule.NONE_FAILED, \
+        "ALL_SUCCESS would turn the skipped transform stop gate into a failure"
+
+    # A verdict hanging off record_ops alone would inherit the same lie: trigger
+    # rules see direct upstream tasks only.
+    upstream = leaves[0].upstream_task_ids
+    assert upstream - {"record_ops"}, f"{dag_id}: verdict must depend on real work, not just record_ops"
+
+
 def test_ops_is_recorded_even_when_the_run_fails(dagbag):
     """A failed run is the one most worth having in ops.pipeline_runs."""
     from airflow.task.trigger_rule import TriggerRule
@@ -84,6 +109,36 @@ def test_the_hourly_dag_verifies_before_and_after_modeling(dagbag):
     for upstream, downstream in pairwise(order):
         assert downstream in dag.get_task(upstream).downstream_task_ids, \
             f"{upstream} should run before {downstream}"
+
+
+def test_the_empty_manifest_stop_gate_is_a_skip_not_a_failure(dagbag):
+    """Modeling is stop-gated until the docs/ deliverables are done, so until
+    then `mbx transforms` has nothing to build. Failing on it would paint every
+    hourly run red for an expected state, which is how alerts stop being read."""
+    from common import NOTHING_TO_BUILD_EXIT
+
+    task = dagbag.dags["pylon_ingest_hourly"].get_task("transform")
+    assert NOTHING_TO_BUILD_EXIT in _skip_exit_codes(task)
+
+
+def test_the_skip_code_matches_the_one_mbx_actually_exits_with(dagbag):
+    """common.py restates the constant rather than importing it — these DAGs do
+    not import the pipeline packages. That makes drift possible, so it is checked
+    here instead: a mismatch turns the skip back into a hard failure."""
+    from common import NOTHING_TO_BUILD_EXIT
+
+    source = (
+        Path(__file__).resolve().parents[2]
+        / "metabase" / "src" / "mb_tools" / "run_transforms.py"
+    ).read_text()
+    assert f"NOTHING_TO_BUILD_EXIT = {NOTHING_TO_BUILD_EXIT}" in source
+
+
+def _skip_exit_codes(task):
+    codes = getattr(task, "skip_on_exit_code", None)
+    if codes is None:
+        return ()
+    return (codes,) if isinstance(codes, int) else tuple(codes)
 
 
 def test_only_the_reconcile_dag_can_tombstone(dagbag):

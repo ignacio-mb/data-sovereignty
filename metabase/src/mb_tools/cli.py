@@ -60,11 +60,17 @@ def audit(strict):
 def transforms(only, dry_run):
     """Create or update every transform in the manifest, run it, and assert its grain."""
     from .mb import MbError
-    from .run_transforms import TransformError, build_all
+    from .run_transforms import NOTHING_TO_BUILD_EXIT, NothingToBuild, TransformError, build_all
 
     names = [name.strip() for name in only.split(",")] if only else None
     try:
         build_all(only=names, dry_run=dry_run)
+    except NothingToBuild as exc:
+        # Distinct exit code rather than ClickException's 1: the hourly DAG maps
+        # it to a skipped task, so an expected stop gate stops reporting itself
+        # as a broken pipeline every hour.
+        click.echo(f"Nothing to build: {exc}", err=True)
+        raise SystemExit(NOTHING_TO_BUILD_EXIT) from exc
     except (TransformError, MbError) as exc:
         raise click.ClickException(str(exc)) from exc
 

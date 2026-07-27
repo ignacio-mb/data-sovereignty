@@ -9,7 +9,14 @@ from __future__ import annotations
 import pendulum
 from airflow.providers.standard.operators.bash import BashOperator
 from airflow.sdk import DAG, TriggerRule
-from common import DEFAULT_ARGS, INGEST_POOL, ingest_command, record_ops_command
+from common import (
+    DEFAULT_ARGS,
+    INGEST_POOL,
+    NOTHING_TO_BUILD_EXIT,
+    ingest_command,
+    record_ops_command,
+    run_verdict,
+)
 
 with DAG(
     dag_id="pylon_ingest_hourly",
@@ -43,6 +50,11 @@ with DAG(
         # manifest (dependency) order and asserts each table's declared grain
         # immediately after building it.
         bash_command="set -euo pipefail\nmbx transforms\n",
+        # 99 is `mbx transforms` reporting an empty manifest. Modeling is
+        # stop-gated on the docs/ deliverables, so until they are done there is
+        # genuinely nothing to build — skip rather than fail, or every hourly run
+        # is red for a known reason and the alerts stop meaning anything.
+        skip_on_exit_code=NOTHING_TO_BUILD_EXIT,
         execution_timeout=pendulum.duration(minutes=30),
     )
 
@@ -63,3 +75,4 @@ with DAG(
     )
 
     ingest >> verify_raw >> transform >> verify_marts >> record_ops
+    [verify_marts, record_ops] >> run_verdict()

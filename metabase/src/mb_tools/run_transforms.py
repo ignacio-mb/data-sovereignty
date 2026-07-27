@@ -42,6 +42,22 @@ class TransformError(RuntimeError):
     pass
 
 
+class NothingToBuild(TransformError):
+    """The manifest parses but declares no transforms.
+
+    Its own type because it is the one "failure" that is an expected state
+    rather than a fault: modeling is stop-gated until someone works through the
+    docs/ deliverables, and until then the hourly DAG has nothing to build.
+    """
+
+
+# Airflow's BashOperator turns this exit code into a skipped task
+# (`skip_on_exit_code`), which is what keeps the stop gate from marking every
+# scheduled run failed. Still non-zero, so an interactive `make mb-transforms`
+# is not mistaken for a successful build.
+NOTHING_TO_BUILD_EXIT = 99
+
+
 def load_manifest(path=None):
     path = path or MANIFEST_PATH
     if not path.exists():
@@ -53,7 +69,7 @@ def load_manifest(path=None):
     manifest.setdefault("schema", ANALYTICS_SCHEMA)
     transforms = manifest.get("transforms") or []
     if not transforms:
-        raise TransformError(
+        raise NothingToBuild(
             f"{path} declares no transforms yet.\n"
             "Modeling is stop-gated on real data: ingest first, then work through "
             "docs/00_source_inventory.md, 01_gap_report.md and 02_assumptions.md "

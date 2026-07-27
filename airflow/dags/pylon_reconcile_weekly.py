@@ -17,7 +17,7 @@ from __future__ import annotations
 import pendulum
 from airflow.providers.standard.operators.bash import BashOperator
 from airflow.sdk import DAG, TriggerRule
-from common import DEFAULT_ARGS, INGEST_POOL, ingest_command, record_ops_command
+from common import DEFAULT_ARGS, INGEST_POOL, ingest_command, record_ops_command, run_verdict
 
 # Matches BACKFILL_START in the pipeline settings. Passing a later date would
 # silently disqualify issues from the soft-delete pass.
@@ -67,3 +67,4 @@ with DAG(
     )
 
     reconcile >> verify_raw >> record_ops
+    [verify_raw, record_ops] >> run_verdict()
