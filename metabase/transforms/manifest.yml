@@ -1,0 +1,67 @@
+# The transform contract.
+#
+# Read by TWO things, which is the point:
+#   mbx transforms                   builds each table, in this order
+#   quality/suites/marts.py          generates the expectations that test them
+#
+# Declaring a grain here and testing it somewhere else is how the two quietly
+# stop agreeing. One declaration, both consumers.
+#
+# ── Entry shape ──────────────────────────────────────────────────────────────
+#
+#   - name: fact_issue                # also the target table name in `schema`
+#     sql: 30_fact_issue.sql          # relative to transforms/sql/
+#     description: >                  # shown in Metabase; write the caveats here
+#       One row per issue with SLA flags precomputed.
+#     grain: [issue_id]               # asserted after every build; becomes the
+#                                     # uniqueness + not-null mart expectations
+#     not_null: [account_id]          # additional required columns
+#     reconciliation:                 # SQL that must return ZERO rows
+#       - description: splits sum to the total
+#         query: >
+#           SELECT 1 FROM {batch}
+#           WHERE issues_opened <> new_issues + reopened_issues
+#
+# `{batch}` is substituted with the table under test.
+#
+# ── Order matters ────────────────────────────────────────────────────────────
+#
+# Transforms are built top to bottom, so each must appear after everything it
+# reads. The layering that keeps that honest:
+#
+#   10_base_*     one per raw table: typed, renamed, hot JSON fields extracted
+#   20_dim_*      conformed dimensions (dim_date, dim_account, dim_agent, ...)
+#   30_fact_*     grain-locked ledgers (fact_issue: one row per issue)
+#   40_metrics_*  wide, join-free marts a person can filter without SQL
+#
+# Read from the layer below, never from raw_pylon except in base_.
+#
+# ── Hard rule ────────────────────────────────────────────────────────────────
+#
+# Plain table transforms only. Never `table-incremental`: Metabase v63's
+# git-sync serializer drops template tags from incremental transforms on import
+# and reports success anyway, leaving them silently broken. Full refresh is
+# entirely adequate at Pylon ticket volumes.
+
+schema: analytics
+
+# ── Nothing is modeled yet ───────────────────────────────────────────────────
+#
+# Modeling is stop-gated on real data, deliberately. The layers above are shaped
+# by what Pylon actually returns for this tenant — which custom fields are
+# populated, whether csat_responses has anything in it, whether resolution_time
+# is ever set — and none of that is knowable from the API docs.
+#
+# The sequence, once `make ingest` has run:
+#
+#   docs/00_source_inventory.md   what is actually in raw_pylon, exact counts,
+#                                 read from information_schema
+#   docs/01_gap_report.md         per requested KPI: buildable exactly,
+#                                 approximately, or not at all — honestly
+#   docs/02_assumptions.md        every judgement call as a named constant
+#                                 (FIRST_RESPONSE_TARGET_MINUTES = 60)
+#
+# Each is a stop gate: the decisions in them are the user's, not the model's.
+# Then fill in `transforms` below. See the `model-data` skill.
+
+transforms: []

@@ -1,0 +1,110 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # Fast, hermetic: mocked Pylon API, duckdb destination, no network, no secrets.
+  unit:
+    name: Lint and unit tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Install the workspace
+        run: uv sync --frozen
+
+      - name: Lint
+        run: uv run ruff check .
+
+      - name: Test
+        run: uv run pytest -q
+
+      # The lockfile must describe the manifests, or the Docker build resolves
+      # something different from what was tested here.
+      - name: Lockfile is current
+        run: uv lock --check
+
+  dags:
+    name: DAG integrity
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      # Airflow is a heavy, tightly-pinned tree; it stays out of the default
+      # environment so the unit job installs in seconds.
+      - name: Install Airflow
+        run: uv sync --frozen --group dag-tests
+
+      - name: DAGs parse and their invariants hold
+        env:
+          AIRFLOW_HOME: ${{ runner.temp }}/airflow
+        run: uv run pytest airflow/tests -q
+
+  stack:
+    name: Stack boots
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Compose file is valid
+        run: |
+          cp .env.example .env
+          bash scripts/gen_secrets.sh .env
+          docker compose config -q
+
+      - name: Build the Airflow image
+        run: docker compose build airflow-cli
+
+      # No license token in CI, so Enterprise behaves like OSS: the warehouse,
+      # the CLIs and the ops schema are exercised; transforms and the Library
+      # are not reachable and are not asserted here.
+      - name: Boot the warehouse
+        run: docker compose up -d --wait warehouse-db metabase-app-db airflow-db
+
+      - name: The CLIs are all on PATH
+        run: |
+          docker compose --profile cli run --rm airflow-cli \
+            bash -c 'pylon --help >/dev/null && dq --help >/dev/null \
+                     && mbx --help >/dev/null && mb --version >/dev/null'
+
+      - name: The ops schema builds against a real Postgres
+        run: docker compose --profile cli run --rm airflow-cli dq ops-init
+
+      - name: Airflow registers every DAG
+        run: |
+          docker compose up -d --wait airflow-apiserver airflow-scheduler \
+            airflow-dag-processor airflow-triggerer
+          docker compose --profile cli run --rm airflow-cli airflow dags list
+
+      - name: Smoke DAG
+        # Metabase is not booted here (its first-boot migrations take minutes),
+        # so the task that checks MB_API_KEY is expected to fail. Everything
+        # else in the DAG must pass.
+        run: |
+          docker compose --profile cli run --rm airflow-cli \
+            airflow dags test stack_smoke 2>&1 | tee smoke.log || true
+          grep -q 'dlt state dir ok' smoke.log
+          grep -q 'ready: ops.gx_results' smoke.log
+
+      - name: Logs on failure
+        if: failure()
+        run: docker compose logs --tail=100
+
+      - name: Tear down
+        if: always()
+        run: docker compose --profile cli down -v

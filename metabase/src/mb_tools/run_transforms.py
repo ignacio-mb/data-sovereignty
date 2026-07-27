@@ -53,7 +53,12 @@ def load_manifest(path=None):
     manifest.setdefault("schema", ANALYTICS_SCHEMA)
     transforms = manifest.get("transforms") or []
     if not transforms:
-        raise TransformError(f"{path} declares no transforms")
+        raise TransformError(
+            f"{path} declares no transforms yet.\n"
+            "Modeling is stop-gated on real data: ingest first, then work through "
+            "docs/00_source_inventory.md, 01_gap_report.md and 02_assumptions.md "
+            "before filling in the manifest. See the model-data skill."
+        )
 
     seen = set()
     for transform in transforms:

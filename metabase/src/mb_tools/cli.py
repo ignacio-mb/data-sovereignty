@@ -59,10 +59,14 @@ def audit(strict):
 @click.option("--dry-run", is_flag=True, help="Report what would change without touching Metabase.")
 def transforms(only, dry_run):
     """Create or update every transform in the manifest, run it, and assert its grain."""
-    from .run_transforms import build_all
+    from .mb import MbError
+    from .run_transforms import TransformError, build_all
 
     names = [name.strip() for name in only.split(",")] if only else None
-    build_all(only=names, dry_run=dry_run)
+    try:
+        build_all(only=names, dry_run=dry_run)
+    except (TransformError, MbError) as exc:
+        raise click.ClickException(str(exc)) from exc
 
 
 @cli.command()
@@ -84,6 +88,15 @@ def dashboards():
 
 
 @cli.command()
-def gitsync():
+@click.option("--export/--no-export", "export_now", default=True, show_default=True,
+              help="Configure and report only, without pushing content.")
+def gitsync(export_now):
     """Export Metabase content to the configured git remote (no-op if unconfigured)."""
-    raise click.ClickException("not implemented yet — see milestone M13")
+    from .gitsync import GitSyncError
+    from .gitsync import run as run_gitsync
+    from .mb import MbError
+
+    try:
+        click.echo(run_gitsync(export_now=export_now))
+    except (GitSyncError, MbError) as exc:
+        raise click.ClickException(str(exc)) from exc
