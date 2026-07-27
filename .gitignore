@@ -1,0 +1,34 @@
+# Secrets — never commit
+.env
+.dlt/secrets.toml
+**/.dlt/secrets.toml
+
+# Local dlt / warehouse artifacts
+*.duckdb
+*.duckdb.wal
+
+# Python
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+*.egg-info/
+dist/
+build/
+
+# Node
+node_modules/
+
+# Runtime state (rebuildable)
+airflow/logs/
+quality/gx_output/
+metabase/.state/
+.scratch/
+
+# Claude Code local state — .claude/skills/ IS tracked
+.claude/scheduled_tasks.lock
+.claude/settings.local.json
+
+# OS
+.DS_Store
