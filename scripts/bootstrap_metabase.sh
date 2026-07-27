@@ -48,6 +48,11 @@ API_KEY_NAME="${MB_API_KEY_NAME:-data-sovereignty-automation}"
 note() { printf '  %s\n' "$*"; }
 warn() { printf '  ! %s\n' "$*" >&2; }
 
+# Some Metabase list endpoints answer with a bare array and others with a
+# {data: [...]} envelope, and it varies by endpoint rather than by version.
+# `.data // .` is not enough: jq raises on indexing an array with a string.
+UNWRAP='(if type == "object" then (.data // []) else . end)[]'
+
 # ─── 1. Wait for Metabase ────────────────────────────────────────────────────
 
 echo "==> Waiting for Metabase at ${MB_URL}"
@@ -102,7 +107,9 @@ echo "==> Checking Enterprise license features"
 FEATURES="$(curl -fsS "${auth[@]}" "${MB_URL}/api/session/properties" \
   | jq -r '.["token-features"] // {} | to_entries | map(select(.value)) | map(.key) | join(" ")')"
 missing=()
-for feature in transforms remote_sync library; do
+# Exact feature names from /api/session/properties. It is "transforms-basic":
+# there is no feature called plain "transforms".
+for feature in transforms-basic remote_sync library; do
   grep -qw "$feature" <<<"$FEATURES" || missing+=("$feature")
 done
 if (( ${#missing[@]} )); then
@@ -120,7 +127,7 @@ echo "==> Connecting the warehouse"
 # an attached database in the UI, and a user may rename it.
 DB_ID="$(curl -fsS "${auth[@]}" "${MB_URL}/api/database" \
   | jq -r --arg host "$WAREHOUSE_HOST" --arg db "$WAREHOUSE_DB" \
-    '(.data // .)[] | select(.details.host == $host and .details.dbname == $db) | .id' | head -n1)"
+    "${UNWRAP} | select(.details.host == \$host and .details.dbname == \$db) | .id" | head -n1)"
 
 if [[ -n "$DB_ID" ]]; then
   note "already connected (id ${DB_ID})"
@@ -155,12 +162,12 @@ if key_works "${MB_API_KEY:-}"; then
   note "existing MB_API_KEY still authenticates, keeping it"
 else
   GROUP_ID="$(curl -fsS "${auth[@]}" "${MB_URL}/api/permissions/group" \
-    | jq -r '(.data // .)[] | select(.name == "Administrators") | .id' | head -n1)"
+    | jq -r "${UNWRAP} | select(.name == \"Administrators\") | .id" | head -n1)"
   [[ -n "$GROUP_ID" ]] || { echo "error: could not find the Administrators group" >&2; exit 1; }
 
   # A name collision is rejected, so retire any key we previously created.
   EXISTING_KEY_ID="$(curl -fsS "${auth[@]}" "${MB_URL}/api/api-key" \
-    | jq -r --arg name "$API_KEY_NAME" '(.data // .)[]? | select(.name == $name) | .id' | head -n1)"
+    | jq -r --arg name "$API_KEY_NAME" "${UNWRAP} | select(.name == \$name) | .id" | head -n1)"
   if [[ -n "$EXISTING_KEY_ID" ]]; then
     note "deleting the previous '${API_KEY_NAME}' key (its secret is unrecoverable)"
     curl -fsS "${auth[@]}" -X DELETE "${MB_URL}/api/api-key/${EXISTING_KEY_ID}" >/dev/null || true

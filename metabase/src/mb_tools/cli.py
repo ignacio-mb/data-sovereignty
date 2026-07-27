@@ -43,7 +43,13 @@ def audit(strict):
         raise click.ClickException(str(exc)) from exc
 
     path = write_report(findings)
-    click.echo(f"Metabase {findings['version']} — all required features present")
+    if findings["missing_features"]:
+        click.echo(f"Metabase {findings['version']} — license is MISSING: "
+                   f"{', '.join(findings['missing_features'])}")
+    else:
+        click.echo(f"Metabase {findings['version']} — all required features present")
+    for problem in findings["problems"]:
+        click.echo(f"  ! {problem}")
     click.echo(f"wrote {path.relative_to(path.parents[1])}")
 
 

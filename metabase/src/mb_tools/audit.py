@@ -36,23 +36,25 @@ def _major_version(version_string):
 
 
 def instance_status():
-    status = mb.run(["auth", "status"])
-    version = (
-        status.get("version")
-        or (status.get("server") or {}).get("version")
-        or status.get("server_version")
+    """Version and license features, read from the live instance.
+
+    Deliberately not `mb auth status`: that reports what was cached on a stored
+    profile at login time, and returns nulls when credentials come from MB_URL /
+    MB_API_KEY — which is how every container and CI run authenticates.
+    `setting get` always asks the server.
+    """
+    version_setting = mb.run(["setting", "get", "version"]) or {}
+    value = version_setting.get("value") or {}
+    version = value.get("tag") if isinstance(value, dict) else value
+
+    features_setting = mb.run(["setting", "get", "token-features"]) or {}
+    features = features_setting.get("value") or {}
+    enabled = (
+        {name for name, on in features.items() if on}
+        if isinstance(features, dict)
+        else set(features)
     )
-    features = (
-        status.get("token_features")
-        or status.get("tokenFeatures")
-        or status.get("features")
-        or {}
-    )
-    if isinstance(features, dict):
-        enabled = {name for name, on in features.items() if on}
-    else:
-        enabled = set(features)
-    return {"raw": status, "version": version, "major": _major_version(version), "features": enabled}
+    return {"version": version, "major": _major_version(version), "features": enabled}
 
 
 def find_database(name=None):

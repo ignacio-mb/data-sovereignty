@@ -72,6 +72,8 @@ x-airflow-common: &airflow-common
     - ./pipeline:/opt/project/pipeline
     - ./quality:/opt/project/quality
     - ./metabase:/opt/project/metabase
+    # Stop-gate deliverables are written by `mbx audit` and reviewed in git.
+    - ./docs:/opt/project/docs
     - dlt-state:/opt/dlt-state
   depends_on:
     warehouse-db:
@@ -244,7 +246,11 @@ services:
     <<: *airflow-common
     profiles: ["cli"]
     restart: "no"
-    command: ["version"]
+    # The base image's entrypoint forwards everything to `airflow`, which turns
+    # `run --rm airflow-cli dq ops-init` into `airflow dq ops-init`. Clearing it
+    # lets the container run any binary on PATH; `airflow ...` still works.
+    entrypoint: []
+    command: ["airflow", "version"]
 
   # Serves the Great Expectations data docs written by `dq docs-build`.
   datadocs:

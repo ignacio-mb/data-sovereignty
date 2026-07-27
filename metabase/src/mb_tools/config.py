@@ -13,10 +13,14 @@ STATE_DIR = METABASE_DIR / ".state"
 
 MIN_METABASE_VERSION = 63
 
-# transforms  — the modeling layer itself
-# remote_sync — git version control of Metabase content
-# library     — the publish/trust boundary for the semantic layer
-REQUIRED_TOKEN_FEATURES = {"transforms", "remote_sync", "library"}
+# Exact names as reported by `mb setting get token-features`. Note it is
+# "transforms-basic", not "transforms" — "transforms-python" is a separate
+# feature we do not need, and guessing "transforms" makes the audit fail on a
+# perfectly good license.
+#   transforms-basic — the modeling layer itself
+#   remote_sync      — git version control of Metabase content
+#   library          — the publish/trust boundary for the semantic layer
+REQUIRED_TOKEN_FEATURES = {"transforms-basic", "remote_sync", "library"}
 
 # How the warehouse connection is named inside Metabase. bootstrap_metabase.sh
 # creates it under this name; the audit matches on it.
