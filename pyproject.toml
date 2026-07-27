@@ -37,7 +37,7 @@ dag-tests = [
 ]
 
 [tool.pytest.ini_options]
-testpaths = ["pipeline/tests", "quality/tests", "metabase/tests"]
+testpaths = ["pipeline/tests", "quality/tests", "metabase/tests", "airflow/tests"]
 markers = [
     "postgres: needs a live warehouse; deselected by default, run via `make test-postgres`",
 ]
