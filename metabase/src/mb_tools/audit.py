@@ -6,6 +6,7 @@ license — this makes it a fast, obvious one.
 """
 
 import logging
+import os
 from datetime import UTC, datetime
 
 from . import mb
@@ -58,8 +59,24 @@ def instance_status():
 
 
 def find_database(name=None):
+    """The warehouse connection, matched on physical identity first.
+
+    Enterprise can relabel an attached database in the UI and a user can rename
+    it, so host+dbname is the reliable key; the display name is only a fallback
+    for a connection someone added by hand. --full is required — the compact
+    list projection omits `details` entirely.
+    """
     name = name or WAREHOUSE_DB_NAME
-    for database in mb.items(mb.run(["db", "list"])):
+    host = os.environ.get("DESTINATION__POSTGRES__CREDENTIALS__HOST", "").strip()
+    dbname = os.environ.get("DESTINATION__POSTGRES__CREDENTIALS__DATABASE", "").strip()
+
+    databases = mb.items(mb.run(["db", "list"], full=True))
+    if host and dbname:
+        for database in databases:
+            details = database.get("details") or {}
+            if details.get("host") == host and details.get("dbname") == dbname:
+                return database
+    for database in databases:
         if database.get("name") == name:
             return database
     return None

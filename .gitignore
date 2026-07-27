@@ -32,3 +32,6 @@ metabase/.state/
 
 # OS
 .DS_Store
+
+# A locally packed mb-cli; the .gitkeep beside it is tracked
+docker/airflow/vendor/*.tgz

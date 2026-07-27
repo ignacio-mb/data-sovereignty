@@ -47,11 +47,15 @@ def require_cli():
         raise MbError(["mb"], 127, "", "the Metabase CLI is not installed (npm i -g @metabase/cli)")
 
 
-def run(args, body=None, parse=True, timeout=DEFAULT_TIMEOUT, check=True):
+def run(args, body=None, parse=True, timeout=DEFAULT_TIMEOUT, check=True, full=False):
     """Run `mb <args>`. Returns parsed JSON when parse=True, else raw stdout.
 
     `body` is written to a temp file and passed with --file; embedding multi-line
     SQL on the command line mangles it in the stored representation.
+
+    `full=True` asks for the complete object. mb's list projections are compact
+    by default and drop nested structures such as a database's `details`, so a
+    filter over an omitted field silently matches nothing.
     """
     require_cli()
     command = ["mb", *args]
@@ -61,6 +65,8 @@ def run(args, body=None, parse=True, timeout=DEFAULT_TIMEOUT, check=True):
             body_path.write_text(json.dumps(body, indent=2), encoding="utf-8")
             command += ["--file", str(body_path)]
 
+        if full:
+            command += ["--full"]
         if parse:
             command += ["--json", "--max-bytes", "0"]
         command += _profile_args()

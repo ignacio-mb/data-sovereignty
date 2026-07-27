@@ -1,6 +1,12 @@
 ARG AIRFLOW_BASE_IMAGE=apache/airflow:3.3.0-python3.12
 FROM ${AIRFLOW_BASE_IMAGE}
 
+# Which mb-cli to install. Defaults to the pinned published package so a clean
+# checkout builds reproducibly. `make mb-cli-local` packs your working copy into
+# docker/airflow/vendor/ instead, which takes precedence — that is the path to
+# use when you are developing mb-cli itself.
+ARG MB_CLI_SPEC=@metabase/cli@0.2.2
+
 # The stack's three Python tools (pylon, dq, mbx) live in their own virtualenv at
 # /opt/data-venv, deliberately NOT in Airflow's. DAGs shell out to them rather
 # than importing them, so dlt and Great Expectations can never drag Airflow's
@@ -21,9 +27,23 @@ RUN set -eux; \
       > /etc/apt/sources.list.d/nodesource.list; \
     apt-get update; \
     apt-get install -y --no-install-recommends nodejs; \
-    npm install -g @metabase/cli@0.2.2; \
     apt-get purge -y --auto-remove gnupg; \
     rm -rf /var/lib/apt/lists/*
+
+# A locally packed mb-cli wins over the published spec. The directory is always
+# present (it holds only a .gitkeep by default) so the COPY never fails.
+COPY docker/airflow/vendor/ /tmp/mb-cli-vendor/
+RUN set -eux; \
+    if ls /tmp/mb-cli-vendor/*.tgz >/dev/null 2>&1; then \
+      tarball="$(ls -t /tmp/mb-cli-vendor/*.tgz | head -1)"; \
+      echo "installing mb-cli from local pack: ${tarball}"; \
+      npm install -g "${tarball}"; \
+    else \
+      echo "installing mb-cli from registry: ${MB_CLI_SPEC}"; \
+      npm install -g "${MB_CLI_SPEC}"; \
+    fi; \
+    rm -rf /tmp/mb-cli-vendor; \
+    mb --version
 
 # uv builds the workspace venv.
 COPY --from=ghcr.io/astral-sh/uv:0.8.17 /uv /usr/local/bin/uv

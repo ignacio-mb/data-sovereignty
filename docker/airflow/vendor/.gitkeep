@@ -1,0 +1,2 @@
+Drop a packed mb-cli tarball here to build the image against a local checkout
+instead of the pinned published package. `make mb-cli-local` does this for you.

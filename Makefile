@@ -24,6 +24,24 @@ env: ## Create .env from .env.example and generate Airflow secrets
 build: ## Build the Airflow image (pylon + dq + mbx + mb)
 	$(COMPOSE) build
 
+# Where your mb-cli working copy lives. Only used by mb-cli-local.
+MB_CLI_SRC ?= $(HOME)/dev/mb-cli/mb-cli
+
+mb-cli-local: ## Rebuild the image against your local mb-cli checkout (MB_CLI_SRC=...)
+	@test -f "$(MB_CLI_SRC)/package.json" || \
+	  (echo "no mb-cli at $(MB_CLI_SRC) — pass MB_CLI_SRC=/path/to/mb-cli"; exit 2)
+	rm -f docker/airflow/vendor/*.tgz
+	cd "$(MB_CLI_SRC)" && bun install && bun run build && \
+	  npm pack --pack-destination "$(CURDIR)/docker/airflow/vendor"
+	@echo "packed: $$(ls docker/airflow/vendor/*.tgz)"
+	$(COMPOSE) build
+	@$(RUN) mb --version
+
+mb-cli-published: ## Go back to the pinned published @metabase/cli
+	rm -f docker/airflow/vendor/*.tgz
+	$(COMPOSE) build
+	@$(RUN) mb --version
+
 up: ## Bring the stack up in stages and bootstrap Metabase
 	$(COMPOSE) up -d --wait warehouse-db metabase-app-db airflow-db metabase
 	bash scripts/bootstrap_metabase.sh

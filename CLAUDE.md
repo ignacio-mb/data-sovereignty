@@ -69,18 +69,48 @@ cursor. `--destination duckdb` is always safe — separate pipeline name.
 data in the warehouse. Destroy one without the other and the pipeline believes
 it already loaded rows that no longer exist.
 
-## Discovering Metabase behaviour
+## Metabase goes through mb-cli
 
-Do not guess at `mb` command shapes. The CLI self-describes, and it ships skills
-versioned with the binary:
+`mb` is the interface to Metabase. Everything in `metabase/src/mb_tools/` shells
+out to it through `mb.py`, and `scripts/bootstrap_metabase.sh` uses it too. The
+CLI already owns credential resolution, retries, redaction, capability
+preflight, and a versioned self-describing contract; re-implementing any of that
+against the REST API means owning it forever.
+
+Raw REST is a last resort, allowed only where no command exists. Today that is
+exactly four things, each marked at the call site: the health poll,
+password-based session login, creating a database connection, and creating an
+API key. **If a future `mb` release adds a command for one of them, delete the
+curl.** Before writing any new REST call, check:
 
 ```bash
-mb <command> --help --json     # input and output JSON Schema
-mb skills list
-mb skills get transform --max-bytes 0
+mb --help --json | jq -r '.commands[].command'   # the whole surface
+mb <command> --help --json                       # input/output JSON Schema
+mb skills get transform --max-bytes 0            # skills shipped with the binary
 ```
 
-Prefer that over anything written here — this file goes stale, those do not.
+Prefer those over anything written here — this file goes stale, they do not.
+
+**`--full` when you filter on nested fields.** List projections are compact by
+default and drop nested structures: `mb db list` has no `details`, so a filter
+on `details.host` matches nothing and reports "not found" rather than failing.
+That silently created a duplicate warehouse connection on every bootstrap run
+until it was caught. `mb.run(..., full=True)` sets the flag.
+
+### Building against a local mb-cli
+
+The image installs the pinned published `@metabase/cli` by default. To run
+against your own checkout — the usual case when changing mb-cli itself:
+
+```bash
+make mb-cli-local                       # defaults to ~/dev/mb-cli/mb-cli
+make mb-cli-local MB_CLI_SRC=/path/to/mb-cli
+make mb-cli-published                   # back to the pinned release
+```
+
+It packs the working copy into `docker/airflow/vendor/`, which the Dockerfile
+prefers over the registry. The tarball is git-ignored, so a clean checkout still
+builds reproducibly.
 
 ## Verification
 
