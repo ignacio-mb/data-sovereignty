@@ -9,8 +9,9 @@ of what happened lives in ops.gx_results and the rendered data docs.
 import logging
 
 import great_expectations as gx
+import psycopg
 
-from .config import connection_string, docs_dir
+from .config import connection_string, docs_dir, psycopg_dsn
 
 log = logging.getLogger(__name__)
 
@@ -19,6 +20,21 @@ DATASOURCE = "warehouse"
 
 def build_context():
     return gx.get_context(mode="ephemeral")
+
+
+def present_tables(schema, dsn=None):
+    """The table names that actually exist in `schema`.
+
+    Asked before the checkpoint is assembled, because GX test-connects every
+    asset while building it: one absent table raises TestConnectionError and
+    takes the whole checkpoint down with it, including the tables that were fine.
+    """
+    with psycopg.connect(dsn or psycopg_dsn()) as conn:
+        rows = conn.execute(
+            "SELECT table_name FROM information_schema.tables WHERE table_schema = %s",
+            (schema,),
+        ).fetchall()
+    return {row[0] for row in rows}
 
 
 def table_batch_definition(context, schema, table):

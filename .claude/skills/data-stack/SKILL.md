@@ -20,13 +20,30 @@ short. Loading all of them wastes context you will want for the actual work.
 | Pull data now, backfill a date range | `ingest` |
 | "Is the pipeline healthy?", "verify the whole state" | `pipeline-status` |
 | Run or interpret data-quality checks | `data-quality` |
-| Add or change a transform, model new data | `model-data` |
-| Add a metric, segment, dashboard, or column metadata | `semantic-layer` |
 | Version Metabase content in git | `metabase-sync` |
 | Ingest from a source that is not Pylon | `add-source` |
 
 Read the leaf with `Read .claude/skills/<name>/SKILL.md`. If a request spans two
 (e.g. "backfill Q1 and check it landed"), load them in sequence, not upfront.
+
+## Out of scope: modeling and analysis
+
+This repo runs the platform — ingestion, orchestration, hosting, and the
+Metabase instance itself. It does **not** author transforms, metrics, segments,
+dashboards, or column metadata.
+
+That work belongs in a separate project driven by `mb-cli`, whose own skills are
+written and maintained by the Metabase engineers who build the product:
+
+```bash
+mb skills list
+mb skills get data-workflow --max-bytes 0    # end-to-end data work
+mb skills get transform --max-bytes 0        # authoring transforms
+```
+
+If the user asks to model data or define a metric here, say plainly that this
+repo hosts the warehouse and the instance but modeling happens against them from
+the mb-cli project, and point at those skills. Do not re-derive the method.
 
 ## Shared contract
 

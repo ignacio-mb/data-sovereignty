@@ -1,0 +1,151 @@
+version: 1
+version_hash: DvBDh8u7xp1r86QuDukhFwJpFsFwzANNeaBqe+gbKuQ=
+engine_version: 11
+name: pylon
+tables:
+  _dlt_version:
+    columns:
+      version:
+        data_type: bigint
+        nullable: false
+      engine_version:
+        data_type: bigint
+        nullable: false
+      inserted_at:
+        data_type: timestamp
+        nullable: false
+      schema_name:
+        data_type: text
+        nullable: false
+      version_hash:
+        data_type: text
+        nullable: false
+      schema:
+        data_type: text
+        nullable: false
+    write_disposition: skip
+    resource: _dlt_version
+    description: Created by DLT. Tracks schema updates
+  _dlt_loads:
+    columns:
+      load_id:
+        data_type: text
+        nullable: false
+        precision: 64
+      schema_name:
+        data_type: text
+        nullable: true
+      status:
+        data_type: bigint
+        nullable: false
+      inserted_at:
+        data_type: timestamp
+        nullable: false
+      schema_version_hash:
+        data_type: text
+        nullable: true
+    write_disposition: skip
+    resource: _dlt_loads
+    description: Created by DLT. Tracks completed loads
+  issues:
+    columns:
+      latest_message_time:
+        data_type: timestamp
+        precision: 6
+      _deleted:
+        data_type: bool
+      id:
+        nullable: false
+        primary_key: true
+    write_disposition: merge
+    resource: issues
+  accounts:
+    columns:
+      _deleted:
+        data_type: bool
+      id:
+        nullable: false
+        primary_key: true
+    write_disposition: merge
+    resource: accounts
+  users:
+    columns:
+      _deleted:
+        data_type: bool
+      id:
+        nullable: false
+        primary_key: true
+    write_disposition: merge
+    resource: users
+  contacts:
+    columns:
+      _deleted:
+        data_type: bool
+      id:
+        nullable: false
+        primary_key: true
+    write_disposition: merge
+    resource: contacts
+  _dlt_pipeline_state:
+    columns:
+      version:
+        data_type: bigint
+        nullable: false
+      engine_version:
+        data_type: bigint
+        nullable: false
+      pipeline_name:
+        data_type: text
+        nullable: false
+      state:
+        data_type: text
+        nullable: false
+      created_at:
+        data_type: timestamp
+        nullable: false
+      version_hash:
+        data_type: text
+        nullable: true
+      _dlt_load_id:
+        data_type: text
+        nullable: false
+        precision: 64
+    write_disposition: append
+    file_format: preferred
+    resource: _dlt_pipeline_state
+settings:
+  detections:
+  - iso_timestamp
+  default_hints:
+    not_null:
+    - _dlt_id
+    - _dlt_root_id
+    - _dlt_parent_id
+    - _dlt_list_idx
+    - _dlt_load_id
+    parent_key:
+    - _dlt_parent_id
+    root_key:
+    - _dlt_root_id
+    unique:
+    - _dlt_id
+    row_key:
+    - _dlt_id
+normalizers:
+  names: snake_case
+  json:
+    module: dlt.common.normalizers.json.relational
+    config:
+      max_nesting: 0
+      propagation:
+        tables:
+          issues:
+            _dlt_id: _dlt_root_id
+          accounts:
+            _dlt_id: _dlt_root_id
+          users:
+            _dlt_id: _dlt_root_id
+          contacts:
+            _dlt_id: _dlt_root_id
+previous_hashes:
+- wvz3g/wbBxRfONWo8wpeMYTNgzkfkDpxSuArL/pweK8=

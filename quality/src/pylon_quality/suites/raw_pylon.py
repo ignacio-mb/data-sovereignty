@@ -19,6 +19,13 @@ ENTITY_TABLES = ("issues", "issue_messages", "accounts", "users", "teams", "cont
 SOFT_DELETE_TABLES = ("accounts", "users", "teams", "contacts")
 MAX_DELETED_FRACTION = 0.5
 
+# dlt only creates a table once a resource yields its first row, so a tenant
+# with no teams simply has no raw_pylon.teams — absence there is a fact about
+# the tenant, not a fault. issues is the exception: nothing else in the warehouse
+# means anything without it, so its absence stays a hard failure rather than a
+# table quietly dropped from the run.
+REQUIRED_TABLES = ("issues",)
+
 
 def _identity(table):
     return [
@@ -55,10 +62,14 @@ def _soft_delete_sanity(table):
 
 
 def _orphans(child_column, parent_table, description):
+    # {batch} expands to `(SELECT ... WHERE true) AS subselect` — GX supplies the
+    # alias itself, so aliasing it again is a syntax error. Wrapping it in one
+    # more subquery is what buys back a name to correlate the NOT EXISTS against,
+    # without depending on GX's alias staying called `subselect`.
     return gxe.UnexpectedRowsExpectation(
         unexpected_rows_query=(
-            f"SELECT {child_column} FROM {{batch}} child "
-            f"WHERE {child_column} IS NOT NULL AND NOT EXISTS ("
+            f"SELECT child.{child_column} FROM (SELECT {child_column} FROM {{batch}}) child "
+            f"WHERE child.{child_column} IS NOT NULL AND NOT EXISTS ("
             f"  SELECT 1 FROM {RAW_SCHEMA}.{parent_table} parent WHERE parent.id = child.{child_column}"
             f")"
         ),
@@ -66,16 +77,26 @@ def _orphans(child_column, parent_table, description):
     )
 
 
-def build():
+def build(present=None):
     """{(schema, table): [Expectation]} for the raw layer.
+
+    `present` is the set of tables actually in the warehouse; None means assume
+    every one of them. Filtering happens here rather than at the caller because
+    the cross-table checks are the awkward part: an orphan check reads its parent
+    table by name, so it has to disappear along with the parent.
 
     Plain lists, not ExpectationSuite objects: GX only lets you add expectations
     to a suite that is already registered with a live data context, so assembling
     the suites is the context's job.
     """
+    def landed(table):
+        return present is None or table in present
+
     suites = {}
 
     for table in ENTITY_TABLES:
+        if not landed(table):
+            continue
         expectations = _identity(table)
         if table in SOFT_DELETE_TABLES:
             expectations.append(_soft_delete_sanity(table))
@@ -83,17 +104,23 @@ def build():
 
     # Issues carry the pipeline's freshness signal: the incremental cursor tracks
     # updated_at, so a stale max means ingestion stopped advancing.
-    suites[(RAW_SCHEMA, "issues")] += [
-        gxe.ExpectColumnValuesToNotBeNull(column="created_at"),
-        _freshness("issues", "updated_at"),
-        _orphans("account_id", "accounts",
-                 "every issue's account_id resolves to a loaded account"),
-    ]
+    if landed("issues"):
+        suites[(RAW_SCHEMA, "issues")] += [
+            gxe.ExpectColumnValuesToNotBeNull(column="created_at"),
+            _freshness("issues", "updated_at"),
+        ]
+        if landed("accounts"):
+            suites[(RAW_SCHEMA, "issues")].append(
+                _orphans("account_id", "accounts",
+                         "every issue's account_id resolves to a loaded account"))
 
-    suites[(RAW_SCHEMA, "issue_messages")] += [
-        gxe.ExpectColumnValuesToNotBeNull(column="issue_id"),
-        gxe.ExpectColumnValuesToNotBeNull(column="timestamp"),
-        _orphans("issue_id", "issues", "every message belongs to a loaded issue"),
-    ]
+    if landed("issue_messages"):
+        suites[(RAW_SCHEMA, "issue_messages")] += [
+            gxe.ExpectColumnValuesToNotBeNull(column="issue_id"),
+            gxe.ExpectColumnValuesToNotBeNull(column="timestamp"),
+        ]
+        if landed("issues"):
+            suites[(RAW_SCHEMA, "issue_messages")].append(
+                _orphans("issue_id", "issues", "every message belongs to a loaded issue"))
 
     return suites

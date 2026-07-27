@@ -91,11 +91,12 @@ def run(checkpoint, fail_on_error):
     from .context import build_checkpoint, build_context
 
     if checkpoint == "raw_pylon":
-        from .suites.raw_pylon import build as build_suites
+        suites = _raw_suites()
     else:
         from .suites.marts import build as build_suites
 
-    suites = build_suites()
+        suites = build_suites()
+
     if not suites:
         click.echo(f"{checkpoint}: nothing to validate yet")
         return
@@ -128,6 +129,36 @@ def run(checkpoint, fail_on_error):
 
     if not result.success and fail_on_error:
         sys.exit(1)
+
+
+def _raw_suites():
+    """The raw suites, narrowed to the tables that actually landed.
+
+    A resource that has never yielded a row has no table at all, and validating
+    the five that exist is worth more than failing all six. The skip is printed
+    rather than swallowed: "not checked" and "checked and passed" are different
+    answers, and the DAG log should show which one it got.
+    """
+    from .config import RAW_SCHEMA
+    from .context import present_tables
+    from .suites.raw_pylon import ENTITY_TABLES, REQUIRED_TABLES, build
+
+    landed = present_tables(RAW_SCHEMA)
+
+    absent_required = [table for table in REQUIRED_TABLES if table not in landed]
+    if absent_required:
+        raise click.ClickException(
+            f"raw_pylon: {', '.join(f'{RAW_SCHEMA}.{t}' for t in absent_required)} "
+            f"{'is' if len(absent_required) == 1 else 'are'} not in the warehouse.\n"
+            "Run `make ingest` first."
+        )
+
+    for table in ENTITY_TABLES:
+        if table not in landed:
+            click.echo(f"raw_pylon: skipping {RAW_SCHEMA}.{table} — no rows have ever "
+                       f"been ingested for it, so dlt never created the table")
+
+    return build(present=landed)
 
 
 def _report(checkpoint, rows):

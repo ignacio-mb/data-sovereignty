@@ -118,7 +118,12 @@ provisions its own API key.
 real data — which Pylon custom fields your tenant populates, whether
 `csat_responses` has anything in it, whether `resolution_time` is ever set. None
 of that is knowable from the API documentation, and guessing it into SQL
-produces marts full of zeros that look healthy. After the first ingest, work
-through the three deliverables in `docs/` (source inventory → gap report →
-assumptions), then fill in `metabase/transforms/manifest.yml`. The `model-data`
-skill walks through it.
+produces marts full of zeros that look healthy.
+
+**Modeling is not this repo's job.** This repo runs the platform: ingestion,
+orchestration, hosting, and the Metabase instance. Authoring transforms, metrics
+and dashboards happens in a separate project driven by `mb-cli`, which ships its
+own skills for exactly that (`mb skills get data-workflow`, `mb skills get
+transform`). The `manifest.yml` contract and `mbx transforms` remain here as the
+orchestration seam — the hourly DAG builds whatever the manifest declares — but
+what goes in it is decided and written elsewhere.

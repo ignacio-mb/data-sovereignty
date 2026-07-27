@@ -1,8 +1,10 @@
 """The suite builders must construct valid GX objects without touching a database."""
 
+import types
+
 import pytest
 import yaml
-from pylon_quality import config
+from pylon_quality import config, results
 from pylon_quality.suites import marts, raw_pylon
 
 
@@ -53,6 +55,46 @@ class TestRawSuites:
         assert any("belongs to a loaded issue" in text for text in messages)
         issues = descriptions(suites[(config.RAW_SCHEMA, "issues")])
         assert any("resolves to a loaded account" in text for text in issues)
+
+
+class TestRawSuitesAgainstWhatLanded:
+    """A resource that never yielded a row has no table: dlt creates it on first
+    write. Validating the tables that exist beats failing all six."""
+
+    ALL_BUT_TEAMS = set(raw_pylon.ENTITY_TABLES) - {"teams"}
+
+    def test_a_table_that_never_landed_is_left_out(self):
+        suites = raw_pylon.build(present=self.ALL_BUT_TEAMS)
+        assert (config.RAW_SCHEMA, "teams") not in suites
+        assert {table for _, table in suites} == self.ALL_BUT_TEAMS
+
+    def test_the_tables_that_landed_keep_their_full_suite(self):
+        everything = raw_pylon.build()
+        landed = raw_pylon.build(present=self.ALL_BUT_TEAMS)
+        for key, suite in landed.items():
+            assert expectation_types(suite) == expectation_types(everything[key])
+
+    def test_an_orphan_check_goes_when_its_parent_does(self):
+        # The check reads raw_pylon.accounts by name, so keeping it would trade
+        # one missing-table error for another at query time.
+        suites = raw_pylon.build(present={"issues", "issue_messages"})
+        issues = descriptions(suites[(config.RAW_SCHEMA, "issues")])
+        assert not any("resolves to a loaded account" in text for text in issues)
+        messages = descriptions(suites[(config.RAW_SCHEMA, "issue_messages")])
+        assert any("belongs to a loaded issue" in text for text in messages)
+
+    def test_messages_lose_their_parent_check_without_issues(self):
+        suites = raw_pylon.build(present={"issue_messages"})
+        messages = descriptions(suites[(config.RAW_SCHEMA, "issue_messages")])
+        assert not any("belongs to a loaded issue" in text for text in messages)
+
+    def test_an_empty_warehouse_builds_nothing_rather_than_erroring(self):
+        assert raw_pylon.build(present=set()) == {}
+
+    def test_issues_is_the_one_table_whose_absence_is_a_failure(self):
+        # Everything else in raw_pylon is meaningless without it, so it must not
+        # be skippable the way an empty directory resource is.
+        assert raw_pylon.REQUIRED_TABLES == ("issues",)
 
 
 MANIFEST = {
@@ -109,6 +151,43 @@ class TestMartSuites:
         path = tmp_path / "manifest.yml"
         path.write_text(yaml.safe_dump(MANIFEST))
         assert marts.build(marts.load_manifest(path)).keys() == marts.build(MANIFEST).keys()
+
+
+class TestExceptionSummary:
+    """A raised expectation and a failed one both arrive as success=False. Only
+    exception_info tells them apart, so it has to survive into ops.gx_results."""
+
+    @staticmethod
+    def result(exception_info):
+        return types.SimpleNamespace(exception_info=exception_info)
+
+    def test_a_clean_failure_reports_no_exception(self):
+        assert results._exception_summary(self.result({"raised_exception": False})) is None
+        assert results._exception_summary(self.result({})) is None
+        assert results._exception_summary(self.result(None)) is None
+
+    def test_a_top_level_exception_is_read(self):
+        summary = results._exception_summary(self.result(
+            {"raised_exception": True, "exception_message": 'syntax error at or near "child"'}))
+        assert summary == 'syntax error at or near "child"'
+
+    def test_an_exception_keyed_by_metric_is_read(self):
+        # GX nests one level down when the failure came from computing a metric.
+        summary = results._exception_summary(self.result(
+            {"MetricConfigurationID(...)": {
+                "raised_exception": True, "exception_message": "boom"}}))
+        assert summary == "boom"
+
+    def test_a_traceback_without_a_message_falls_back_to_its_last_line(self):
+        summary = results._exception_summary(self.result(
+            {"raised_exception": True,
+             "exception_traceback": "Traceback:\n  File x\npsycopg.errors.SyntaxError: nope\n"}))
+        assert summary == "psycopg.errors.SyntaxError: nope"
+
+    def test_a_long_message_is_truncated(self):
+        summary = results._exception_summary(self.result(
+            {"raised_exception": True, "exception_message": "x" * 900}))
+        assert len(summary) == 500 and summary.endswith("…")
 
 
 class TestConfig:

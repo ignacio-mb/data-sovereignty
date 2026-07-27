@@ -36,6 +36,32 @@ def _truncate(value, limit=500):
     return text if len(text) <= limit else text[: limit - 1] + "…"
 
 
+def _exception_summary(result):
+    """Why an expectation raised, if it did.
+
+    GX reports a raised expectation as success=False with an empty result, so a
+    SQL error and a genuine data failure are indistinguishable in the recorded
+    row unless the cause is lifted out of exception_info. Shape varies by GX
+    version — sometimes the flags sit at the top level, sometimes one level down
+    keyed by metric — so both are handled rather than assumed.
+    """
+    info = getattr(result, "exception_info", None)
+    if not isinstance(info, dict) or not info:
+        return None
+    entries = [info] if "raised_exception" in info else [
+        value for value in info.values() if isinstance(value, dict)
+    ]
+    for entry in entries:
+        if not entry.get("raised_exception"):
+            continue
+        message = entry.get("exception_message")
+        if not message:
+            lines = [line for line in (entry.get("exception_traceback") or "").splitlines() if line.strip()]
+            message = lines[-1] if lines else "expectation raised, no detail reported"
+        return _truncate(message)
+    return None
+
+
 def flatten(checkpoint_name, checkpoint_result):
     """GX CheckpointResult -> one dict per expectation evaluated."""
     context = airflow_context()
@@ -46,6 +72,7 @@ def flatten(checkpoint_name, checkpoint_result):
         for result in validation_result.results:
             config = result.expectation_config
             kwargs = dict(config.kwargs or {})
+            exception = _exception_summary(result)
             rows.append({
                 "checkpoint": checkpoint_name,
                 "suite": suite,
@@ -53,10 +80,14 @@ def flatten(checkpoint_name, checkpoint_result):
                 "expectation": config.type,
                 "column_name": kwargs.get("column"),
                 "success": bool(result.success),
-                "observed_value": _truncate(result.result.get("observed_value")),
+                # An expectation that raised has no observed value; surfacing the
+                # error here means `select observed_value ... where not success`
+                # answers "what went wrong" for both kinds of failure.
+                "observed_value": _truncate(result.result.get("observed_value")) or exception,
                 "details": json.dumps({
                     "kwargs": {k: v for k, v in kwargs.items() if k != "batch_id"},
                     "result": result.result,
+                    "exception": exception,
                 }, default=str),
                 **context,
             })
