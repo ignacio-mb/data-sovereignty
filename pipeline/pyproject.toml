@@ -1,0 +1,40 @@
+[project]
+name = "pylon-pipeline"
+version = "0.1.0"
+description = "Pylon -> Postgres ingestion (dlt)"
+requires-python = ">=3.11"
+dependencies = [
+    "dlt[postgres]>=1.28.1,<2",
+    "beautifulsoup4>=4.12",
+    "click>=8.1",
+    "pendulum>=3.0",
+    "python-dotenv>=1.0",
+]
+
+[project.scripts]
+pylon = "pylon_pipeline.cli:cli"
+
+[dependency-groups]
+dev = [
+    "pytest>=8",
+    "requests-mock>=1.12",
+    "dlt[duckdb]>=1.28.1,<2",
+    "ruff>=0.6",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/pylon_pipeline"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = [
+    "postgres: needs a live warehouse; deselected by default, run via `make test-postgres`",
+]
+addopts = "-m 'not postgres'"
+
+[tool.ruff]
+line-length = 110

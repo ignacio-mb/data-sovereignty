@@ -1,0 +1,264 @@
+name: data-sovereignty
+
+# ─── Shared fragments ────────────────────────────────────────────────────────
+
+x-pg-base: &pg-base
+  image: postgres:16-alpine
+  restart: unless-stopped
+  healthcheck:
+    interval: 2s
+    timeout: 5s
+    retries: 30
+
+x-airflow-env: &airflow-env
+  AIRFLOW__CORE__EXECUTOR: LocalExecutor
+  AIRFLOW__CORE__AUTH_MANAGER: airflow.api_fastapi.auth.managers.simple.simple_auth_manager.SimpleAuthManager
+  # Local single-user stack: the UI is not exposed beyond the host.
+  AIRFLOW__CORE__SIMPLE_AUTH_MANAGER_ALL_ADMINS: 'true'
+  AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: >-
+    postgresql+psycopg2://${AIRFLOW_USER}:${AIRFLOW_PASSWORD}@airflow-db:5432/${AIRFLOW_DB}
+  AIRFLOW__CORE__FERNET_KEY: ${AIRFLOW__CORE__FERNET_KEY}
+  AIRFLOW__API_AUTH__JWT_SECRET: ${AIRFLOW__API_AUTH__JWT_SECRET}
+  AIRFLOW__CORE__EXECUTION_API_SERVER_URL: http://airflow-apiserver:8080/execution/
+  AIRFLOW__CORE__LOAD_EXAMPLES: 'false'
+  AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION: 'false'
+  AIRFLOW__CORE__DAGS_FOLDER: /opt/airflow/dags
+  AIRFLOW__CORE__PARALLELISM: '4'
+  AIRFLOW__SCHEDULER__ENABLE_HEALTH_CHECK: 'true'
+
+  # ── Pipeline configuration ──
+  # dlt state lives on a named volume so the incremental cursor survives
+  # container recreation. It is a matched pair with warehouse-data.
+  DLT_DATA_DIR: /opt/dlt-state
+  PYLON_API_KEY: ${PYLON_API_KEY}
+
+  # Container-facing warehouse credentials. These deliberately override whatever
+  # is in .env (which holds the host-facing localhost:5434 values), so neither
+  # side ever has to think about which network it is on.
+  DESTINATION__POSTGRES__CREDENTIALS__HOST: warehouse-db
+  DESTINATION__POSTGRES__CREDENTIALS__PORT: '5432'
+  DESTINATION__POSTGRES__CREDENTIALS__USERNAME: ${WAREHOUSE_USER}
+  DESTINATION__POSTGRES__CREDENTIALS__PASSWORD: ${WAREHOUSE_PASSWORD}
+  DESTINATION__POSTGRES__CREDENTIALS__DATABASE: ${WAREHOUSE_DB}
+
+  # ── Metabase CLI ──
+  MB_URL: http://metabase:3000
+  MB_API_KEY: ${MB_API_KEY}
+  MB_CLI_DISABLE_KEYRING: '1'
+
+  # ── Data quality ──
+  GX_FRESHNESS_HOURS: ${GX_FRESHNESS_HOURS:-24}
+  GX_DOCS_DIR: /opt/project/quality/gx_output/data_docs
+
+  # ── Metabase content git-sync (optional) ──
+  MB_GIT_SYNC_URL: ${MB_GIT_SYNC_URL:-}
+  MB_GIT_SYNC_BRANCH: ${MB_GIT_SYNC_BRANCH:-main}
+  MB_GIT_SYNC_PAT: ${MB_GIT_SYNC_PAT:-}
+
+x-airflow-common: &airflow-common
+  build:
+    context: .
+    dockerfile: docker/airflow/Dockerfile
+    args:
+      AIRFLOW_BASE_IMAGE: ${AIRFLOW_BASE_IMAGE:-apache/airflow:3.3.0-python3.12}
+  image: data-sovereignty/airflow:local
+  environment: *airflow-env
+  user: "${AIRFLOW_UID:-50000}:0"
+  volumes:
+    - ./airflow/dags:/opt/airflow/dags
+    - ./airflow/logs:/opt/airflow/logs
+    # The workspace is bind-mounted so edits to SQL, suites and DAGs take effect
+    # without a rebuild. Dependency changes still need `make build`.
+    - ./pipeline:/opt/project/pipeline
+    - ./quality:/opt/project/quality
+    - ./metabase:/opt/project/metabase
+    - dlt-state:/opt/dlt-state
+  depends_on:
+    warehouse-db:
+      condition: service_healthy
+    airflow-db:
+      condition: service_healthy
+
+x-airflow-service: &airflow-service
+  <<: *airflow-common
+  restart: unless-stopped
+  depends_on:
+    warehouse-db:
+      condition: service_healthy
+    airflow-db:
+      condition: service_healthy
+    airflow-init:
+      condition: service_completed_successfully
+
+# ─── Services ────────────────────────────────────────────────────────────────
+
+services:
+
+  # The warehouse. raw_pylon (dlt), analytics (Metabase transforms), ops (dq).
+  warehouse-db:
+    <<: *pg-base
+    environment:
+      POSTGRES_USER: ${WAREHOUSE_USER}
+      POSTGRES_PASSWORD: ${WAREHOUSE_PASSWORD}
+      POSTGRES_DB: ${WAREHOUSE_DB}
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 2s
+      timeout: 5s
+      retries: 30
+    ports:
+      - "${WAREHOUSE_HOST_PORT:-5434}:5432"
+    volumes:
+      - warehouse-data:/var/lib/postgresql/data
+      # Runs once, on first init of an empty volume.
+      - ./warehouse/init:/docker-entrypoint-initdb.d:ro
+
+  # Metabase's own application database. Never share this between instances.
+  metabase-app-db:
+    <<: *pg-base
+    environment:
+      POSTGRES_USER: ${METABASE_APP_USER}
+      POSTGRES_PASSWORD: ${METABASE_APP_PASSWORD}
+      POSTGRES_DB: ${METABASE_APP_DB}
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 2s
+      timeout: 5s
+      retries: 30
+    volumes:
+      - metabase-app-data:/var/lib/postgresql/data
+
+  airflow-db:
+    <<: *pg-base
+    environment:
+      POSTGRES_USER: ${AIRFLOW_USER}
+      POSTGRES_PASSWORD: ${AIRFLOW_PASSWORD}
+      POSTGRES_DB: ${AIRFLOW_DB}
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 2s
+      timeout: 5s
+      retries: 30
+    volumes:
+      - airflow-db-data:/var/lib/postgresql/data
+
+  metabase:
+    image: ${METABASE_IMAGE:-metabase/metabase-enterprise:v1.63.1.6}
+    restart: unless-stopped
+    environment:
+      MB_DB_TYPE: postgres
+      MB_DB_HOST: metabase-app-db
+      MB_DB_PORT: '5432'
+      MB_DB_USER: ${METABASE_APP_USER}
+      MB_DB_PASS: ${METABASE_APP_PASSWORD}
+      MB_DB_DBNAME: ${METABASE_APP_DB}
+      MB_SITE_NAME: ${MB_SITE_NAME:-Data Sovereignty}
+      JAVA_TIMEZONE: UTC
+      MB_LOAD_SAMPLE_CONTENT: 'false'
+      MB_CHECK_FOR_UPDATES: 'false'
+      MB_ANON_TRACKING_ENABLED: 'false'
+      # Production license token: normal run mode, no metastore override.
+      MB_PREMIUM_EMBEDDING_TOKEN: ${MB_PREMIUM_EMBEDDING_TOKEN}
+    ports:
+      - "${METABASE_HOST_PORT:-3100}:3000"
+    healthcheck:
+      # The image ships one HTTP client or the other depending on the build.
+      test: ["CMD-SHELL",
+             "curl -fsS http://localhost:3000/api/health || wget -q -O- http://localhost:3000/api/health || exit 1"]
+      interval: 3s
+      timeout: 5s
+      retries: 60
+      start_period: 30s
+    depends_on:
+      metabase-app-db:
+        condition: service_healthy
+      warehouse-db:
+        condition: service_healthy
+
+  airflow-init:
+    <<: *airflow-common
+    entrypoint: /bin/bash
+    user: "0:0"
+    command:
+      - -c
+      - |
+        mkdir -p /opt/airflow/logs /opt/dlt-state
+        chown -R "${AIRFLOW_UID:-50000}:0" /opt/airflow/logs /opt/dlt-state
+        exec runuser -u airflow -- bash -c '
+          airflow db migrate &&
+          airflow pools set pylon_pipeline 1 \
+            "Serializes dlt runs: concurrent ingests would race the incremental cursor."
+        '
+    restart: "no"
+    depends_on:
+      warehouse-db:
+        condition: service_healthy
+      airflow-db:
+        condition: service_healthy
+
+  airflow-apiserver:
+    <<: *airflow-service
+    command: api-server
+    ports:
+      - "${AIRFLOW_HOST_PORT:-8080}:8080"
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "http://localhost:8080/api/v2/monitor/health"]
+      interval: 10s
+      timeout: 10s
+      retries: 12
+      start_period: 30s
+
+  airflow-scheduler:
+    <<: *airflow-service
+    command: scheduler
+    healthcheck:
+      test: ["CMD-SHELL", 'airflow jobs check --job-type SchedulerJob --hostname "$${HOSTNAME}"']
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+
+  airflow-dag-processor:
+    <<: *airflow-service
+    command: dag-processor
+    healthcheck:
+      test: ["CMD-SHELL", 'airflow jobs check --job-type DagProcessorJob --hostname "$${HOSTNAME}"']
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+
+  airflow-triggerer:
+    <<: *airflow-service
+    command: triggerer
+    healthcheck:
+      test: ["CMD-SHELL", 'airflow jobs check --job-type TriggererJob --hostname "$${HOSTNAME}"']
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+
+  # The execution seam for one-off commands: pylon, dq, mbx, mb and airflow are
+  # all on PATH here. `make` uses this for everything it runs.
+  airflow-cli:
+    <<: *airflow-common
+    profiles: ["cli"]
+    restart: "no"
+    command: ["version"]
+
+  # Serves the Great Expectations data docs written by `dq docs-build`.
+  datadocs:
+    image: nginx:alpine
+    restart: unless-stopped
+    ports:
+      - "${DATADOCS_HOST_PORT:-8081}:80"
+    volumes:
+      - ./quality/gx_output/data_docs:/usr/share/nginx/html:ro
+
+volumes:
+  warehouse-data:
+  metabase-app-data:
+  airflow-db-data:
+  # The dlt incremental cursor and pending load packages. Matched pair with
+  # warehouse-data: destroying one without the other desynchronizes the pipeline.
+  dlt-state:

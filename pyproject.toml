@@ -1,0 +1,48 @@
+[project]
+name = "data-sovereignty"
+version = "0.1.0"
+description = "Self-hosted Pylon -> Postgres -> Metabase data stack"
+# Upper bound comes from great-expectations. 3.12 matches the Airflow image.
+requires-python = ">=3.11,<3.14"
+# The root is a virtual project: it exists to pull the three workspace members
+# into one environment, so `pylon`, `dq` and `mbx` are all on PATH together.
+dependencies = [
+    "pylon-pipeline",
+    "pylon-quality",
+    "mb-tools",
+]
+
+[tool.uv]
+package = false
+
+[tool.uv.workspace]
+members = ["pipeline", "quality", "metabase"]
+
+[tool.uv.sources]
+pylon-pipeline = { workspace = true }
+pylon-quality = { workspace = true }
+mb-tools = { workspace = true }
+
+[dependency-groups]
+dev = [
+    "pytest>=8",
+    "requests-mock>=1.12",
+    "dlt[duckdb]>=1.28.1,<2",
+    "ruff>=0.6",
+]
+# Airflow is a heavy, tightly-pinned tree. It is only needed to import-check the
+# DAGs, so it stays out of the default sync: `uv sync --group dag-tests`.
+dag-tests = [
+    "apache-airflow==3.3.0",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["pipeline/tests", "quality/tests", "metabase/tests"]
+markers = [
+    "postgres: needs a live warehouse; deselected by default, run via `make test-postgres`",
+]
+addopts = "-m 'not postgres'"
+
+[tool.ruff]
+line-length = 110
+exclude = ["airflow/logs", "quality/gx_output"]

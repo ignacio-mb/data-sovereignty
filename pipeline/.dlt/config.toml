@@ -1,0 +1,9 @@
+# dlt runtime configuration. Only read when running from the project root;
+# cli.py sets the same values as env-var defaults so runs work from anywhere.
+[runtime]
+dlthub_telemetry = false
+log_level = "WARNING"
+request_timeout = 30
+request_max_attempts = 10
+request_backoff_factor = 2
+request_max_retry_delay = 300
