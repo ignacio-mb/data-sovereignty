@@ -100,8 +100,21 @@ def run(checkpoint, fail_on_error):
         click.echo(f"{checkpoint}: nothing to validate yet")
         return
 
+    from great_expectations.datasource.fluent.interfaces import TestConnectionError
+
     context = build_context()
-    gx_checkpoint = build_checkpoint(context, checkpoint, suites)
+    try:
+        gx_checkpoint = build_checkpoint(context, checkpoint, suites)
+    except TestConnectionError as exc:
+        # Overwhelmingly this is "you have not ingested anything yet", which is
+        # a reasonable state to be in and does not deserve a stack trace.
+        raise click.ClickException(
+            f"{checkpoint}: the tables to validate are not in the warehouse yet.\n"
+            f"  {exc}\n"
+            + ("Run `make ingest` first."
+               if checkpoint == "raw_pylon"
+               else "Run `make mb-transforms` first.")
+        ) from exc
     log.info("running checkpoint %s over %d asset(s)", checkpoint, len(suites))
     result = gx_checkpoint.run()
 

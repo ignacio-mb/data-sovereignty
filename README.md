@@ -27,13 +27,29 @@ serves it. Claude Code operates all of it through the skills in .claude/skills.
 
 ```bash
 make env      # create .env, generate Airflow secrets
-# fill in PYLON_API_KEY, MB_PREMIUM_EMBEDDING_TOKEN, MB_ADMIN_PASSWORD
-make build    # build the Airflow image (pylon + dq + mbx + mb)
+```
+
+Fill in three values in `.env`:
+
+| Variable | Where it comes from |
+|---|---|
+| `PYLON_API_KEY` | Pylon → Settings → API |
+| `MB_PREMIUM_EMBEDDING_TOKEN` | Your Metabase Enterprise license |
+| `MB_ADMIN_PASSWORD` | Pick one; it becomes the Metabase admin login |
+
+```bash
+make build    # build the Airflow image (~5 min the first time)
 make up       # start services, bootstrap Metabase, provision an API key
-make ingest   # trigger the first ingest
+make mb-audit # confirm the license grants transforms, remote_sync and library
+make ingest   # first ingest
 ```
 
 Then ask Claude: *"what's the state of my pipeline?"*
+
+Without the license token the stack still comes up and ingestion works, but
+Metabase behaves like OSS: transforms, the Library and git-sync stay locked, so
+the modeling and semantic layers cannot be built. `make mb-audit` says so
+explicitly rather than letting you find out later.
 
 ## Services
 
@@ -91,3 +107,18 @@ once. Change them in `.env`.
 
 See [CLAUDE.md](CLAUDE.md) for the architecture map and the rules that keep the
 stack reproducible.
+
+## What is built, and what waits on data
+
+The platform is complete and verified end to end: the stack boots, the smoke DAG
+passes, ingestion is wired, quality suites run, and the Metabase bootstrap
+provisions its own API key.
+
+**The transform manifest ships empty on purpose.** Modeling is stop-gated on
+real data — which Pylon custom fields your tenant populates, whether
+`csat_responses` has anything in it, whether `resolution_time` is ever set. None
+of that is knowable from the API documentation, and guessing it into SQL
+produces marts full of zeros that look healthy. After the first ingest, work
+through the three deliverables in `docs/` (source inventory → gap report →
+assumptions), then fill in `metabase/transforms/manifest.yml`. The `model-data`
+skill walks through it.
