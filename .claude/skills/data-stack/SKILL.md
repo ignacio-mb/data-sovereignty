@@ -1,6 +1,6 @@
 ---
 name: data-stack
-description: Router for operating the self-hosted Pylon data stack — ingestion, data quality, modeling, semantic layer, and pipeline health. Triggers — "ingest Pylon data", "is my pipeline healthy?", "verify the state of my success engineering department", "backfill last quarter", "why did the quality check fail?", "add a metric", "bring the stack up", "what changed in the warehouse?"
+description: Router for operating the self-hosted Pylon data stack — ingestion, orchestration, data quality, and pipeline health. Triggers — "ingest Pylon data", "is my pipeline healthy?", "verify the state of my success engineering department", "backfill last quarter", "why did the quality check fail?", "bring the stack up", "what changed in the warehouse?", "add a metric", "version Metabase content in git", "sync my dashboards"
 allowed-tools: Bash, Read, Write, Edit, Glob, Grep, AskUserQuestion
 ---
 
@@ -20,30 +20,41 @@ short. Loading all of them wastes context you will want for the actual work.
 | Pull data now, backfill a date range | `ingest` |
 | "Is the pipeline healthy?", "verify the whole state" | `pipeline-status` |
 | Run or interpret data-quality checks | `data-quality` |
-| Version Metabase content in git | `metabase-sync` |
 | Ingest from a source that is not Pylon | `add-source` |
 
 Read the leaf with `Read .claude/skills/<name>/SKILL.md`. If a request spans two
 (e.g. "backfill Q1 and check it landed"), load them in sequence, not upfront.
 
-## Out of scope: modeling and analysis
+## Out of scope: everything about using Metabase
 
 This repo runs the platform — ingestion, orchestration, hosting, and the
 Metabase instance itself. It does **not** author transforms, metrics, segments,
-dashboards, or column metadata.
+dashboards or column metadata, and it does not carry a method for versioning
+Metabase content.
 
-That work belongs in a separate project driven by `mb-cli`, whose own skills are
-written and maintained by the Metabase engineers who build the product:
+All of that belongs to `mb-cli`, whose skills are written and maintained by the
+Metabase engineers who build the product, versioned with the binary, and
+therefore never stale the way a copy here would be:
 
 ```bash
 mb skills list
 mb skills get data-workflow --max-bytes 0    # end-to-end data work
 mb skills get transform --max-bytes 0        # authoring transforms
+mb skills get git-sync --max-bytes 0         # versioning content in git
 ```
 
-If the user asks to model data or define a metric here, say plainly that this
-repo hosts the warehouse and the instance but modeling happens against them from
-the mb-cli project, and point at those skills. Do not re-derive the method.
+Every command also self-describes — `mb transform create --help --json` returns
+its input and output JSON Schema. Trust that over anything written here.
+
+Asked to model data, define a metric, or set up content sync, say plainly that
+this repo hosts the warehouse and the instance but that work happens against
+them from the mb-cli project, and point at those skills. Do not re-derive the
+method here.
+
+What *does* stay here is the orchestration around it: `make mb-transforms`
+builds whatever `manifest.yml` declares, and `make mb-sync` runs an export. Both
+are a clean no-op when there is nothing configured. Running them is this repo's
+job; deciding what they should contain is not.
 
 ## Shared contract
 
@@ -74,19 +85,7 @@ analytics.*    base_ -> dim_ -> fact_ -> metrics_, built by Metabase transforms
 ops.*          gx_results, pipeline_runs, mb_transform_runs
 ```
 
-- `pylon` ingests. `dq` validates. `mbx` models. `mb` is the raw Metabase CLI.
+- `pylon` ingests. `dq` validates. `mbx` builds whatever the manifest declares.
+  `mb` is the Metabase CLI, and owns everything about how Metabase is used.
 - Airflow runs all of it hourly; a pool of one serializes ingestion.
 - Anything long-running belongs in a DAG, not in your shell.
-
-## When you need Metabase detail
-
-The `mb` CLI ships its own skills, versioned with the binary. Load them at the
-point of use rather than guessing at command shapes:
-
-```bash
-mb skills list
-mb skills get transform --max-bytes 0
-```
-
-Every command also self-describes: `mb transform create --help --json` returns
-its input and output JSON Schema. Trust that over anything written here.

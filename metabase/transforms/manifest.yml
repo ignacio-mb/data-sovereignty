@@ -62,6 +62,11 @@ schema: analytics
 #                                 (FIRST_RESPONSE_TARGET_MINUTES = 60)
 #
 # Each is a stop gate: the decisions in them are the user's, not the model's.
-# Then fill in `transforms` below. See the `model-data` skill.
+# Then fill in `transforms` below.
+#
+# The modeling itself is not this repo's job — it hosts the warehouse and the
+# instance, and builds whatever this file declares. How to decide what belongs
+# in it lives with the mb-cli project, whose skills are versioned with the
+# binary: `mb skills get data-workflow` and `mb skills get transform`.
 
 transforms: []

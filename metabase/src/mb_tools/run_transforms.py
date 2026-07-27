@@ -73,7 +73,8 @@ def load_manifest(path=None):
             f"{path} declares no transforms yet.\n"
             "Modeling is stop-gated on real data: ingest first, then work through "
             "docs/00_source_inventory.md, 01_gap_report.md and 02_assumptions.md "
-            "before filling in the manifest. See the model-data skill."
+            "before filling in the manifest. Deciding what goes in it is mb-cli's "
+            "job — see `mb skills get data-workflow`."
         )
 
     seen = set()
