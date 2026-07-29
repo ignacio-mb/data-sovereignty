@@ -88,6 +88,11 @@ x-airflow-common: &airflow-common
 x-airflow-service: &airflow-service
   <<: *airflow-common
   restart: unless-stopped
+  # Bounded on purpose. Left unlimited, the scheduler and triggerer grew to
+  # ~3 GB each on a 7.7 GB Docker VM and OOM-killed Metabase. A laptop stack has
+  # to fit in the laptop, and a task that genuinely needs more should fail
+  # loudly here rather than quietly evict another service.
+  mem_limit: ${AIRFLOW_MEM_LIMIT:-1500m}
   depends_on:
     warehouse-db:
       condition: service_healthy
@@ -125,7 +130,7 @@ services:
         hard: 262144
     # Left unbounded, ClickHouse sizes its caches against the whole host and
     # will happily starve Metabase and Airflow on a laptop.
-    mem_limit: ${CLICKHOUSE_MEM_LIMIT:-4g}
+    mem_limit: ${CLICKHOUSE_MEM_LIMIT:-3g}
     ports:
       - "${WAREHOUSE_HTTP_PORT:-8124}:8123"    # HTTP — dlt, GX, Metabase
       - "${WAREHOUSE_NATIVE_PORT:-9001}:9000"  # native — clickhouse-client
@@ -133,6 +138,9 @@ services:
       - warehouse-data:/var/lib/clickhouse
       # Runs once, on first init of an empty volume.
       - ./warehouse/init:/docker-entrypoint-initdb.d:ro
+      # Read on every start, unlike the init SQL. Keeps ClickHouse inside the
+      # container's memory limit instead of being OOM-killed by it.
+      - ./warehouse/config/low-memory.xml:/etc/clickhouse-server/config.d/low-memory.xml:ro
 
   # Metabase's own application database. Never share this between instances.
   metabase-app-db:
@@ -180,6 +188,9 @@ services:
       MB_ANON_TRACKING_ENABLED: 'false'
       # Production license token: normal run mode, no metastore override.
       MB_PREMIUM_EMBEDDING_TOKEN: ${MB_PREMIUM_EMBEDDING_TOKEN}
+      # The JVM sizes its heap against the container limit, not the host.
+      JAVA_OPTS: -Xmx1500m
+    mem_limit: ${METABASE_MEM_LIMIT:-2g}
     ports:
       - "${METABASE_HOST_PORT:-3100}:3000"
     healthcheck:

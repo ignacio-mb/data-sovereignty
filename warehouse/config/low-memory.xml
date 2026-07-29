@@ -1,0 +1,38 @@
+<?xml version="1.0"?>
+<!--
+  ClickHouse sizes its memory budget from what it believes the machine has. In a
+  container that reads high, so it will happily plan for more than the cgroup
+  allows and get OOM-killed mid-load — which is exactly what happened here:
+  five restarts, and a dlt load that died with "Code: 210. Connection refused".
+
+  A mem_limit on the service alone does not prevent that; it only decides who
+  does the killing. The server has to be told its real budget, and that budget
+  has to sit comfortably below the container limit so a spike has somewhere to
+  go. Caches are trimmed for the same reason: on a laptop this warehouse holds
+  a few hundred thousand rows, not a few billion.
+-->
+<clickhouse>
+    <!-- Hard ceiling for the whole server. Container limit is 3g, so this
+         leaves headroom for a spike rather than sitting right at the edge.
+
+         Do NOT also set max_server_memory_usage_to_ram_ratio to 0 hoping to
+         disable the ratio: ClickHouse reads 0 as "no cap" and it wins over the
+         explicit byte value, which is how this container got OOM-killed even
+         with the limit set. Leaving the ratio at its default is correct — the
+         smaller of the two applies. -->
+    <max_server_memory_usage>2000000000</max_server_memory_usage>
+
+    <mark_cache_size>268435456</mark_cache_size>
+    <uncompressed_cache_size>134217728</uncompressed_cache_size>
+
+    <!-- One concurrent query is plenty for a single-pipeline stack, and it
+         keeps a heavy transform from competing with an ingest. -->
+    <max_concurrent_queries>8</max_concurrent_queries>
+
+    <profiles>
+        <default>
+            <max_memory_usage>1500000000</max_memory_usage>
+            <max_bytes_before_external_group_by>750000000</max_bytes_before_external_group_by>
+        </default>
+    </profiles>
+</clickhouse>

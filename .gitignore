@@ -39,3 +39,4 @@ docker/airflow/vendor/*.tgz
 # Local run logs from interactive work
 .ingest.log
 .build.log
+.ingest2.log

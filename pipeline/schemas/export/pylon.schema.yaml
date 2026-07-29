@@ -1,5 +1,5 @@
-version: 1
-version_hash: DvBDh8u7xp1r86QuDukhFwJpFsFwzANNeaBqe+gbKuQ=
+version: 2
+version_hash: uO9Vq5JcS7LXV1OlG9LMryeeODHLn8xNn1VubywQV9A=
 engine_version: 11
 name: pylon
 tables:
@@ -57,8 +57,94 @@ tables:
       id:
         nullable: false
         primary_key: true
+        data_type: text
+      number:
+        data_type: bigint
+        nullable: true
+      title:
+        data_type: text
+        nullable: true
+      link:
+        data_type: text
+        nullable: true
+      body_html:
+        data_type: text
+        nullable: true
+      state:
+        data_type: text
+        nullable: true
+      account:
+        data_type: text
+        nullable: true
+      requester:
+        data_type: text
+        nullable: true
+      custom_fields:
+        data_type: text
+        nullable: true
+      resolution_time:
+        data_type: timestamp
+        nullable: true
+      created_at:
+        data_type: timestamp
+        nullable: true
+      updated_at:
+        data_type: timestamp
+        nullable: true
+      customer_portal_visible:
+        data_type: bool
+        nullable: true
+      source:
+        data_type: text
+        nullable: true
+      type:
+        data_type: text
+        nullable: true
+      resolution_seconds:
+        data_type: bigint
+        nullable: true
+      business_hours_resolution_seconds:
+        data_type: bigint
+        nullable: true
+      number_of_touches:
+        data_type: bigint
+        nullable: true
+      author_unverified:
+        data_type: bool
+        nullable: true
+      time_in_status_seconds:
+        data_type: text
+        nullable: true
+      business_hours_time_in_status_seconds:
+        data_type: text
+        nullable: true
+      account_id:
+        data_type: text
+        nullable: true
+      requester_id:
+        data_type: text
+        nullable: true
+      _dlt_load_id:
+        data_type: text
+        nullable: false
+      _dlt_id:
+        data_type: text
+        nullable: false
+        unique: true
+        row_key: true
+      assignee:
+        data_type: text
+        nullable: true
+      assignee_id:
+        data_type: text
+        nullable: true
+      tags:
+        data_type: text
+        nullable: true
     write_disposition: merge
     resource: issues
+    x-normalizer:
+      seen-data: true
   accounts:
     columns:
       _deleted:
@@ -66,8 +152,59 @@ tables:
       id:
         nullable: false
         primary_key: true
+        data_type: text
+      name:
+        data_type: text
+        nullable: true
+      domain:
+        data_type: text
+        nullable: true
+      domains:
+        data_type: text
+        nullable: true
+      primary_domain:
+        data_type: text
+        nullable: true
+      type:
+        data_type: text
+        nullable: true
+      channels:
+        data_type: text
+        nullable: true
+      created_at:
+        data_type: timestamp
+        nullable: true
+      updated_at:
+        data_type: timestamp
+        nullable: true
+      tags:
+        data_type: text
+        nullable: true
+      custom_fields:
+        data_type: text
+        nullable: true
+      latest_customer_activity_time:
+        data_type: timestamp
+        nullable: true
+      is_disabled:
+        data_type: bool
+        nullable: true
+      _dlt_load_id:
+        data_type: text
+        nullable: false
+      _dlt_id:
+        data_type: text
+        nullable: false
+        unique: true
+        row_key: true
+      latest_customer_activity_time__v_text:
+        data_type: text
+        nullable: true
+        variant: true
     write_disposition: merge
     resource: accounts
+    x-normalizer:
+      seen-data: true
   users:
     columns:
       _deleted:
@@ -75,8 +212,40 @@ tables:
       id:
         nullable: false
         primary_key: true
+        data_type: text
+      name:
+        data_type: text
+        nullable: true
+      status:
+        data_type: text
+        nullable: true
+      email:
+        data_type: text
+        nullable: true
+      emails:
+        data_type: text
+        nullable: true
+      role_id:
+        data_type: text
+        nullable: true
+      role:
+        data_type: text
+        nullable: true
+      avatar_url:
+        data_type: text
+        nullable: true
+      _dlt_load_id:
+        data_type: text
+        nullable: false
+      _dlt_id:
+        data_type: text
+        nullable: false
+        unique: true
+        row_key: true
     write_disposition: merge
     resource: users
+    x-normalizer:
+      seen-data: true
   contacts:
     columns:
       _deleted:
@@ -84,8 +253,49 @@ tables:
       id:
         nullable: false
         primary_key: true
+        data_type: text
+      name:
+        data_type: text
+        nullable: true
+      email:
+        data_type: text
+        nullable: true
+      emails:
+        data_type: text
+        nullable: true
+      account:
+        data_type: text
+        nullable: true
+      custom_fields:
+        data_type: text
+        nullable: true
+      portal_role:
+        data_type: text
+        nullable: true
+      portal_role_id:
+        data_type: text
+        nullable: true
+      avatar_url:
+        data_type: text
+        nullable: true
+      phone_numbers:
+        data_type: text
+        nullable: true
+      integration_user_ids:
+        data_type: text
+        nullable: true
+      _dlt_load_id:
+        data_type: text
+        nullable: false
+      _dlt_id:
+        data_type: text
+        nullable: false
+        unique: true
+        row_key: true
     write_disposition: merge
     resource: contacts
+    x-normalizer:
+      seen-data: true
   _dlt_pipeline_state:
     columns:
       version:
@@ -110,9 +320,16 @@ tables:
         data_type: text
         nullable: false
         precision: 64
+      _dlt_id:
+        data_type: text
+        nullable: false
+        unique: true
+        row_key: true
     write_disposition: append
     file_format: preferred
     resource: _dlt_pipeline_state
+    x-normalizer:
+      seen-data: true
 settings:
   detections:
   - iso_timestamp
@@ -148,4 +365,5 @@ normalizers:
           contacts:
             _dlt_id: _dlt_root_id
 previous_hashes:
+- DvBDh8u7xp1r86QuDukhFwJpFsFwzANNeaBqe+gbKuQ=
 - wvz3g/wbBxRfONWo8wpeMYTNgzkfkDpxSuArL/pweK8=
