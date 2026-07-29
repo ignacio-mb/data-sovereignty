@@ -1,42 +1,42 @@
 ---
 name: data-stack
-description: Router for operating the self-hosted data stack — ingestion from any REST API, orchestration, data quality, and pipeline health. Triggers — "ingest Pylon data", "connect a new API", "is my pipeline healthy?", "verify the state of my success engineering department", "backfill last quarter", "why did the quality check fail?", "bring the stack up", "what changed in the warehouse?", "add a metric", "version Metabase content in git", "sync my dashboards"
+description: Router for operating the self-hosted ingestion stack — connecting APIs as sources, loading and backfilling them, data quality, and pipeline health. Triggers — "connect a new API", "ingest the latest data", "backfill last quarter", "is my pipeline healthy?", "why did the quality check fail?", "bring the stack up", "what landed in the warehouse?", "set up a new sync".
 allowed-tools: Bash, Read, Write, Edit, Glob, Grep, AskUserQuestion
 ---
 
-# Operating the data stack
+# Operating the ingestion stack
 
-This repo is a self-hosted pipeline: any REST API → ClickHouse → Metabase.
-Pylon is the first source, not the only shape it fits. You drive it
-through `make` targets and three CLIs, never by clicking in the Metabase UI.
+This repo gets data **in**: any REST API → ClickHouse, scheduled by Airflow and
+validated by Great Expectations. You drive it through `make` targets and three
+CLIs. A source is a file — `sources/<name>.yml` — and Pylon is the first one, not
+the shape everything is built around.
 
-**Read this file, then load exactly one leaf skill for the task.** Each leaf is
-short. Loading all of them wastes context you will want for the actual work.
+**Read this file, then load exactly one leaf skill.** Each leaf is short. Loading
+all of them wastes context you will want for the actual work.
 
 ## Route
 
 | The user wants | Load |
 |---|---|
 | Start/stop the stack, first-time setup, "is it running?" | `stack-ops` |
-| Pull data now, backfill a date range | `ingest` |
-| "Is the pipeline healthy?", "verify the whole state" | `pipeline-status` |
-| Run or interpret data-quality checks | `data-quality` |
 | Connect a new API as a source | `add-source` |
 | Work out how a third-party API behaves | `api-research` |
+| Load or backfill a source that already exists | `ingest` |
+| "Is it healthy?", "did the sync work?" | `pipeline-status` |
+| Run or interpret the quality checks | `data-quality` |
 
 Read the leaf with `Read .claude/skills/<name>/SKILL.md`. If a request spans two
-(e.g. "backfill Q1 and check it landed"), load them in sequence, not upfront.
+("backfill Q1 and check it landed"), load them in sequence, not upfront.
 
-## Out of scope: everything about using Metabase
+## Out of scope: modeling, and everything about using Metabase
 
-This repo runs the platform — ingestion, orchestration, hosting, and the
-Metabase instance itself. It does **not** author transforms, metrics, segments,
-dashboards or column metadata, and it does not carry a method for versioning
-Metabase content.
+These skills stop at `raw_<source>.*`. They do **not** author transforms, metrics,
+segments, dashboards or column metadata, and they do not carry a method for
+versioning Metabase content.
 
-All of that belongs to `mb-cli`, whose skills are written and maintained by the
-Metabase engineers who build the product, versioned with the binary, and
-therefore never stale the way a copy here would be:
+That work belongs to `mb-cli`, whose skills are written by the Metabase engineers
+who build the product and versioned with the binary, so they never go stale the
+way a copy here would:
 
 ```bash
 mb skills list
@@ -45,53 +45,55 @@ mb skills get transform --max-bytes 0        # authoring transforms
 mb skills get git-sync --max-bytes 0         # versioning content in git
 ```
 
-Every command also self-describes — `mb transform create --help --json` returns
-its input and output JSON Schema. Trust that over anything written here.
+Every command self-describes too — `mb transform create --help --json` returns its
+input and output JSON Schema. Trust that over anything written here.
 
-Asked to model data, define a metric, or set up content sync, say plainly that
-this repo hosts the warehouse and the instance but that work happens against
-them from the mb-cli project, and point at those skills. Do not re-derive the
-method here.
+Asked to model data or define a metric, say plainly that this repo lands the raw
+data and hosts the warehouse, but that modeling happens against them from the
+mb-cli project — and point at those skills rather than re-deriving the method.
 
-What *does* stay here is the orchestration around it: `make mb-transforms`
-builds whatever `manifest.yml` declares, and `make mb-sync` runs an export. Both
-are a clean no-op when there is nothing configured. Running them is this repo's
-job; deciding what they should contain is not.
+What *does* stay here is the orchestration: `make mb-transforms` builds whatever
+`metabase/transforms/manifest.yml` declares, as a step in the ingest DAG. Running
+it is this repo's job; deciding what goes in it is not.
 
 ## Shared contract
 
-**Answer first.** Lead with what the user asked, then the evidence. "Ingestion
-is healthy — last run 12 minutes ago, 340 issues, all checks passed" beats a
+**Answer first.** Lead with what the user asked, then the evidence. "Ingestion is
+healthy — last run 12 minutes ago, 340 new rows, all checks passed" beats a
 transcript of five commands.
 
-**The repo is the source of truth.** Transforms come from
-`metabase/transforms/manifest.yml` and its SQL files. A transform edited in the
-Metabase UI is overwritten by the next `mbx transforms` run — that is intended.
-If a user has UI changes worth keeping, port them into the repo first.
+**Name the source.** With several connected, "ingestion is fine" is wrong if one
+of three has been failing for a day. `ls sources/` is always the first thing to
+check.
 
-**Never print secrets.** `.env` holds the Pylon key, the Metabase license and
-the API key. Read it only to check whether a variable is *set*, and never echo a
-value or paste one into a command line that gets logged.
+**Read the spec before answering questions about behaviour.** Schedule, rate
+limits, what is incremental, what "fresh" means and which resources are required
+are all declared in `sources/<name>.yml`. Guessing at them is how you tell someone
+a backfill will take minutes when it will take hours.
 
-**Prefer `make`.** Targets carry the right flags, the right container and the
-right ordering. `make help` lists them. Reach past make only when diagnosing.
+**Never print secrets.** `.env` holds every source's API token plus the Metabase
+licence and API key. Read it only to check whether a variable is *set*; never echo
+a value or paste one into a command that gets logged.
 
-**Say what you did not check.** "Ingest looks fine, I did not look at the
-transform layer" is useful. Implying full coverage you did not verify is not.
+**Prefer `make`.** Targets carry the right flags, container and ordering.
+`make help` lists them. Reach past make only when diagnosing.
+
+**Say what you did not check.** "Ingest looks fine, I did not look at the quality
+results" is useful. Implying coverage you did not verify is not.
 
 ## The five-second orientation
 
 ```
-raw_<source>.* one database per source, loaded by dlt, merged on the primary key
-analytics.*    base_ -> dim_ -> fact_ -> metrics_, built by Metabase transforms
-ops.*          gx_results, pipeline_runs, mb_transform_runs
+sources/<name>.yml   the connector contract: API, pagination, incremental, schedule
+raw_<source>.*       one database per source, loaded by dlt, merged on primary key
+ops.*                gx_results, pipeline_runs, mb_transform_runs
+analytics.*           modeled tables — built here, authored elsewhere
 ```
 
-A source is `sources/<name>.yml` — what the API is, how it pages, what is
-incremental, when it runs. `raw_pylon` is simply the first one.
-
-- `pylon` ingests. `dq` validates. `mbx` builds whatever the manifest declares.
-  `mb` is the Metabase CLI, and owns everything about how Metabase is used.
-- Airflow runs all of it hourly; each source has a pool of one, so its runs
-  cannot race that source's incremental cursor.
-- Anything long-running belongs in a DAG, not in your shell.
+- `ingest` loads. `dq` validates. `mbx` runs whatever the manifest declares. `mb`
+  is the Metabase CLI and owns everything about how Metabase is used.
+- Airflow schedules each source separately; each has a **pool of one**, so its
+  runs cannot race that source's incremental cursor.
+- Anything long-running belongs in a DAG, not in your shell. An out-of-band
+  ingest against the production warehouse races the cursor;
+  `--destination duckdb` is always safe.

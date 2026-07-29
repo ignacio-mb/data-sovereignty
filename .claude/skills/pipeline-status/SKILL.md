@@ -1,17 +1,20 @@
 ---
 name: pipeline-status
-description: Answer "is the pipeline healthy?" end to end — services, recent runs, freshness, data-quality verdicts, and transform history. Triggers — "is my pipeline healthy?", "verify the whole state", "what's the status?", "is the data fresh?", "did last night's run work?", "what's broken?".
+description: Answer "is ingestion healthy?" end to end — services, recent runs, freshness and data-quality verdicts, per source. Triggers — "is my pipeline healthy?", "verify the whole state", "what's the status?", "is the data fresh?", "did last night's run work?", "what's broken?", "did the sync work?".
 allowed-tools: Bash, Read
 ---
 
-# Reporting pipeline state
+# Reporting ingestion state
 
-The user is asking one question: **can I trust the numbers right now?** Answer
-that first, in a sentence, then show the evidence.
+The user is asking one thing: **can I trust what is in the warehouse right now?**
+Answer that in a sentence, then show the evidence.
 
-Work down the chain and stop early when you find the break — a stopped container
-explains stale data, so there is no point reporting the staleness separately as
-if it were a second problem.
+Work down the chain and stop at the first break. A stopped container explains
+stale data, so reporting the staleness separately as if it were a second problem
+just makes the answer longer and less clear.
+
+With more than one source connected, say **which** source is unhealthy. "Ingestion
+is fine" is wrong if one of three connectors has been failing for a day.
 
 ## 1. Services
 
@@ -21,82 +24,86 @@ make status
 
 Anything not `healthy`/`running` is the answer; go to `stack-ops`.
 
-## 2. Recent runs
+## 2. Recent runs, per source
 
 ```bash
+ls sources/            # which sources exist
 docker compose --profile cli run --rm airflow-cli \
-  airflow dags list-runs -d pylon_ingest_hourly --limit 5
+  airflow dags list-runs -d <source>_ingest_hourly --limit 5
 ```
 
-The hourly DAG runs at :17. More than ~90 minutes since the last success means
-the scheduler is stuck or runs are failing.
+Compare against that source's own schedule — `grep schedule: sources/<name>.yml`.
+Being "late" only means something relative to how often it is supposed to run.
 
-## 3. Everything else, in one query
+## 3. The rest in one query
 
-`ops` exists so this is a single round trip rather than five:
+`ops` exists so this is one round trip rather than five. Note this is ClickHouse:
+`INTERVAL 24 HOUR`, not Postgres' `interval '24 hours'`.
 
 ```bash
-make psql <<'SQL'
-\pset pager off
-SELECT 'last ingest'   AS signal,
-       to_char(max(recorded_at), 'YYYY-MM-DD HH24:MI') AS at,
-       (SELECT status FROM ops.pipeline_runs ORDER BY recorded_at DESC LIMIT 1) AS detail
+make ch <<'SQL'
+SELECT 'last run' AS signal,
+       formatDateTime(max(recorded_at), '%F %R') AS at,
+       argMax(status, recorded_at) AS detail
   FROM ops.pipeline_runs
 UNION ALL
-SELECT 'data freshness',
-       to_char(max(updated_at), 'YYYY-MM-DD HH24:MI'),
-       age(now(), max(updated_at))::text
-  FROM raw_pylon.issues
-UNION ALL
 SELECT 'quality (24h)',
-       to_char(max(validated_at), 'YYYY-MM-DD HH24:MI'),
-       count(*) FILTER (WHERE NOT success) || ' failed of ' || count(*)
-  FROM ops.gx_results WHERE validated_at > now() - interval '24 hours'
-UNION ALL
-SELECT 'transforms',
-       to_char(max(started_at), 'YYYY-MM-DD HH24:MI'),
-       count(*) FILTER (WHERE status <> 'succeeded') || ' not succeeded of ' || count(*)
-  FROM ops.mb_transform_runs WHERE started_at > now() - interval '24 hours';
+       formatDateTime(max(validated_at), '%F %R'),
+       concat(toString(countIf(NOT success AND severity = 'error')), ' gating failures of ',
+              toString(count()))
+  FROM ops.gx_results WHERE validated_at > now() - INTERVAL 24 HOUR;
 SQL
 ```
 
-If any signal is bad, drill in:
+Then per source, whatever its freshness column is (from the spec's
+`quality.freshness`):
 
 ```sql
--- what exactly failed
-SELECT asset, expectation, column_name, observed_value
-  FROM ops.gx_results
- WHERE NOT success AND validated_at > now() - interval '24 hours'
- ORDER BY validated_at DESC LIMIT 20;
+SELECT max(updated_at), dateDiff('hour', max(updated_at), now()) AS hours_old
+  FROM raw_<source>.<table>;
+```
 
--- transforms that did not succeed
-SELECT transform_name, status, started_at, message
-  FROM ops.mb_transform_runs
- WHERE status <> 'succeeded' ORDER BY started_at DESC LIMIT 10;
+Drill into failures with the sentence the spec author wrote, not the machinery:
+
+```sql
+SELECT asset, description, observed_value, severity
+  FROM ops.gx_results
+ WHERE NOT success AND validated_at > now() - INTERVAL 24 HOUR
+ ORDER BY validated_at DESC LIMIT 20;
 ```
 
 ## 4. Point them at the dashboard
 
-Everything above is also the **Pipeline Health** dashboard in Metabase
-(http://localhost:3100). Mention it — the user should not need to ask you next
+All of this is also the **Pipeline Health** dashboard in Metabase
+(http://localhost:3100). Mention it — the user should not have to ask you next
 time.
 
 ## Reading the signals honestly
 
-**A stale `raw_pylon.issues.updated_at` is not automatically a failure.** It
-means no ticket has been updated recently. On a quiet weekend that is correct.
-Check whether ingest runs are *succeeding* before calling freshness a problem —
-successful runs plus old data means the tenant is quiet; failing runs plus old
-data means the pipeline is broken.
+**Stale data is not automatically a failure.** It means the source system has not
+changed anything recently, which on a quiet weekend is correct. Check whether
+runs are *succeeding* first: successful runs plus old data means the source is
+quiet; failing runs plus old data means the pipeline is broken. Those are opposite
+answers from the same row count.
+
+**Only gating failures make a run red.** `severity = 'warn'` is recorded and
+reported but deliberately does not fail a checkpoint — freshness is usually one.
+Counting warnings as breakage manufactures an incident.
 
 **Zero rows in `ops.*` means nothing has run yet**, not that everything is fine.
 Say "no runs recorded yet" rather than reporting green.
 
-**Transform statuses understate damage.** When a transform fails, the ones
-downstream are *skipped* and keep their previous status — often `succeeded`. One
-failure near the base of the stack can leave a dozen stale tables all reporting
-success. If anything failed, treat everything downstream of it as suspect.
+**Passing checks only cover what is declared.** They verify keys, nulls, freshness
+and the declared referential edges — not that a number is business-correct. Do not
+translate "all checks passed" into "the data is right".
 
-**Passing quality checks only cover what is declared.** They verify grain,
-nulls, freshness and the declared reconciliations — not that a number is
-business-correct. Do not translate "all checks passed" into "the data is right".
+**A skipped resource is not a failed one.** A source whose API returned nothing
+for an endpoint has no table, and the suite skips it with a message. That is a
+fact about the source, not a fault — unless the spec marks it `required`.
+
+## Not this skill's job
+
+Whether the modeled tables are correct. This reports on getting data in:
+services, runs, freshness, and the ingest quality gate. `ops.mb_transform_runs`
+records whether the transform step *ran*, which is orchestration — but whether
+its output is right belongs to whoever authors the transforms. See the router.
