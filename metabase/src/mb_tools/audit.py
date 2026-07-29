@@ -67,8 +67,8 @@ def find_database(name=None):
     list projection omits `details` entirely.
     """
     name = name or WAREHOUSE_DB_NAME
-    host = os.environ.get("DESTINATION__POSTGRES__CREDENTIALS__HOST", "").strip()
-    dbname = os.environ.get("DESTINATION__POSTGRES__CREDENTIALS__DATABASE", "").strip()
+    host = os.environ.get("DESTINATION__CLICKHOUSE__CREDENTIALS__HOST", "").strip()
+    dbname = os.environ.get("DESTINATION__CLICKHOUSE__CREDENTIALS__DATABASE", "").strip()
 
     databases = mb.items(mb.run(["db", "list"], full=True))
     if host and dbname:

@@ -57,7 +57,7 @@ ADMIN_LAST="${MB_ADMIN_LAST:-Admin}"
 
 WAREHOUSE_MB_NAME="${MB_WAREHOUSE_DB_NAME:-Warehouse}"
 WAREHOUSE_HOST="warehouse-db"
-WAREHOUSE_PORT=5432
+WAREHOUSE_HTTP_PORT=8123
 WAREHOUSE_DB="${WAREHOUSE_DB:-warehouse}"
 WAREHOUSE_USER="${WAREHOUSE_USER:-warehouse}"
 WAREHOUSE_PASSWORD="${WAREHOUSE_PASSWORD:-warehouse}"
@@ -212,13 +212,17 @@ if [[ -n "$DB_ID" ]]; then
   note "already connected (id ${DB_ID})"
 else
   # curl: `mb db` has list/get/schemas/sync-schema/rescan-values but no create.
+  # The ClickHouse driver is bundled in Metabase Enterprise v1.63 — no plugin
+  # jar and no /plugins mount. `scan-all-databases` is the important field: our
+  # three logical layers are three ClickHouse DATABASES, and without it Metabase
+  # only ever sees the one named in `dbname`.
   DB_BODY="$(jq -n \
     --arg name "$WAREHOUSE_MB_NAME" --arg host "$WAREHOUSE_HOST" \
-    --argjson port "$WAREHOUSE_PORT" --arg dbname "$WAREHOUSE_DB" \
+    --argjson port "$WAREHOUSE_HTTP_PORT" --arg dbname "$WAREHOUSE_DB" \
     --arg user "$WAREHOUSE_USER" --arg password "$WAREHOUSE_PASSWORD" \
-    '{name: $name, engine: "postgres",
+    '{name: $name, engine: "clickhouse",
       details: {host: $host, port: $port, dbname: $dbname, user: $user,
-                password: $password, "schema-filters-type": "all",
+                password: $password, "scan-all-databases": true,
                 ssl: false, "tunnel-enabled": false}}')"
   DB_ID="$(curl -fsS -H "x-api-key: ${MB_API_KEY}" -X POST "${MB_URL}/api/database" \
     -H 'Content-Type: application/json' -d "$DB_BODY" | jq -r '.id // empty')"

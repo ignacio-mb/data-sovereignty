@@ -1,6 +1,6 @@
 # Working in this repo
 
-A self-hosted data stack: Pylon → Postgres → Metabase, orchestrated by Airflow
+A self-hosted data stack: Pylon → ClickHouse → Metabase, orchestrated by Airflow
 and validated by Great Expectations. Designed to be operated by prompt.
 
 **Start with `.claude/skills/data-stack/SKILL.md`** — it routes to the right leaf
@@ -31,9 +31,20 @@ ops.*         The pipeline's self-knowledge: gx_results, pipeline_runs,
               mb_transform_runs. Feeds the Pipeline Health dashboard.
 ```
 
-Only `ops` is created by the init SQL. `raw_pylon` is created by dlt on first
-ingest and `analytics` by the first transform run — pre-creating them takes
-ownership away from the tool that manages them.
+**ClickHouse has no schemas — each of those is a DATABASE.** Metabase shows them
+where it would show Postgres schemas, and everything addresses tables as
+`database.table`.
+
+All three are created by the init SQL, which differs from the usual "let the
+tool own its own schema" arrangement. ClickHouse forces it: a client selects its
+database as part of connecting, so dlt fails with `Code: 81. Database raw_pylon
+does not exist` during its pre-run sync, before it can create anything.
+Ownership of the *contents* is unchanged — dlt owns the tables in `raw_pylon`,
+Metabase transforms own `analytics`, `dq ops-init` owns `ops`.
+
+**dlt writes into `raw_pylon` directly, with an empty dataset name AND an empty
+`dataset_table_separator`.** Leave either set and the tables come out as
+`raw_pylon.raw_pylon___issues`. See `build_pipeline`.
 
 ## Hard rules
 
@@ -62,7 +73,7 @@ command that gets logged, never commit one. To check configuration, test whether
 a variable is *set*.
 
 **Ingest through Airflow while the stack is up.** A pool of one serializes dlt
-runs; an out-of-band `pylon ingest --destination postgres` races the incremental
+runs; an out-of-band `pylon ingest --destination clickhouse` races the incremental
 cursor. `--destination duckdb` is always safe — separate pipeline name.
 
 **`warehouse-data` and `dlt-state` are a matched pair.** The cursor describes

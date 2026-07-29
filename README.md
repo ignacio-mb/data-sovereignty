@@ -1,12 +1,13 @@
 # Data Sovereignty
 
-A self-hosted, end-to-end data stack you drive from Claude Code. Pylon tickets
-land in your own Postgres warehouse, get validated, modeled and published as a
-Metabase semantic layer — with nothing leaving your machine except the calls to
+A self-hosted, end-to-end data stack you drive from Claude Code — ingestion,
+orchestration, data quality, warehouse and BI in one repo, on your own hardware.
+Pylon tickets land in your own warehouse, get validated, modeled and published as
+a Metabase semantic layer, with nothing leaving your machine except the calls to
 the Pylon API and the Metabase license check.
 
 ```
-Pylon API ──(dlt)──▶ Postgres warehouse ──(Metabase transforms)──▶ semantic layer
+Pylon API ──(dlt)──▶ ClickHouse ──(Metabase transforms)──▶ semantic layer
                      ├─ raw_pylon.*    six flat tables, merged on id
                      ├─ analytics.*    base_ → dim_ → fact_ → metrics_
                      └─ ops.*          quality results, run history
@@ -14,6 +15,20 @@ Pylon API ──(dlt)──▶ Postgres warehouse ──(Metabase transforms)─
 Airflow schedules it. Great Expectations verifies it. Metabase models and
 serves it. Claude Code operates all of it through the skills in .claude/skills.
 ```
+
+Every component is open source and self-hosted: [dlt](https://dlthub.com),
+[Great Expectations](https://greatexpectations.io),
+[Apache Airflow](https://airflow.apache.org),
+[Metabase](https://github.com/metabase/metabase),
+[ClickHouse](https://github.com/ClickHouse/ClickHouse), Docker.
+
+**One honest caveat about "fully open source."** Metabase itself is open source,
+but *transforms*, the *Library* and *git-sync* are Enterprise features behind a
+license token. Everything up to and including the warehouse — ingestion,
+scheduling, quality, the `ops` observability schema — runs on OSS alone and needs
+no token. Without one, Metabase still boots and still charts your data; it just
+won't build the modeled layer. `make mb-audit` tells you which side of that line
+you are on instead of letting you discover it later.
 
 ## Prerequisites
 
@@ -58,7 +73,7 @@ explicitly rather than letting you find out later.
 | Metabase | http://localhost:3100 | Enterprise v1.63.x |
 | Airflow | http://localhost:8080 | simple auth, all users admin |
 | Data docs | http://localhost:8081 | Great Expectations validation docs |
-| Warehouse | `postgres://localhost:5434/warehouse` | `make psql` |
+| Warehouse | `http://localhost:8124` (HTTP), `9001` (native) | ClickHouse — `make ch` |
 
 Ports avoid the `metabase-demo` stack's defaults (3000/5433) so both can run at
 once. Change them in `.env`.
@@ -74,8 +89,13 @@ once. Change them in `.env`.
 | `make quality` | Run raw + mart data-quality checkpoints |
 | `make status` | Service health and URLs |
 | `make mb-transforms` | Rebuild the transform layer from the manifest |
+| `make ch` | Open a clickhouse-client shell on the warehouse |
 | `make test` | Offline test suite (mocked API, no network) |
+| `make mb-cli-local` | Rebuild the image against a local mb-cli checkout |
 | `make nuke` | Destroy everything, including data |
+
+DAG-integrity tests need Airflow, which is deliberately outside the default
+environment: `uv run --group dag-tests pytest airflow/tests`.
 
 ## Lifecycle notes
 
@@ -89,10 +109,70 @@ once. Change them in `.env`.
   re-run `make up` afterwards to heal it.
 - **Warehouse init SQL runs once**, on first initialization of an empty volume.
   Editing `warehouse/init/*.sql` does nothing until the volume is recreated.
-- **Don't run `pylon ingest --destination postgres` by hand while the stack is
+- **Don't run `pylon ingest --destination clickhouse` by hand while the stack is
   up.** Airflow serializes ingest through a pool of one; an out-of-band run
   races the cursor. Use `make ingest`. Local `--destination duckdb` smoke runs
   are safe — they use a separate pipeline name and can't touch production state.
+
+## Data quality: gating checks and advisory ones
+
+`dq run` records one row per expectation in `ops.gx_results` and renders data
+docs to <http://localhost:8081>.
+
+An expectation marked `meta={"severity": "warn"}` is **advisory**: recorded and
+reported, but it does not fail the checkpoint or redden the DAG. Anything not
+marked is gating, so being ignorable is opt-in.
+
+Freshness is the motivating case, and currently the only advisory check. It
+asserts that `issues.updated_at` is recent — which measures when your *tenant*
+last touched a ticket, not whether ingestion works. On a quiet weekend it fails
+while every part of the pipeline is healthy, and a check that reddens the DAG for
+a non-problem teaches you to stop reading red DAGs. Whether ingestion actually
+ran is a question about runs rather than rows, and `ops.pipeline_runs` answers
+it.
+
+Failures lead with the sentence the suite author wrote, not the machinery:
+
+```
+warnings (not fatal):
+  raw_pylon.issues: issues.updated_at is within the last 24h (advisory: ...) observed=1
+```
+
+## The warehouse is ClickHouse
+
+Self-hosted `clickhouse/clickhouse-server`, replacing the Postgres warehouse.
+Metabase and Airflow keep their own Postgres application databases — ClickHouse
+cannot serve either.
+
+**ClickHouse has no schemas.** Each of `raw_pylon`, `analytics` and `ops` is a
+*database*, and Metabase shows them where it would show Postgres schemas. Unlike
+the Postgres arrangement, all three are created by `warehouse/init/`: a
+ClickHouse client selects its database while connecting, so dlt fails with
+`Code: 81. Database raw_pylon does not exist` before it can create anything.
+
+Four things were worth the trouble to get right:
+
+- **Metabase Enterprise v1.63 bundles the ClickHouse driver.** No plugin jar, no
+  `/plugins` mount. The connection sets `scan-all-databases` so one connection
+  sees all three databases.
+- **dlt needs an empty dataset name *and* an empty `dataset_table_separator`.**
+  Leave either set and tables arrive as `raw_pylon.raw_pylon___issues` instead of
+  `raw_pylon.issues`.
+- **Great Expectations works, but not through its own `[clickhouse]` extra**,
+  which is unsatisfiable on Python 3.12: it pins `sqlalchemy<2` while requiring
+  `clickhouse-sqlalchemy>=0.3`, which requires `sqlalchemy>=2`. The dialect is a
+  direct dependency instead, and the datasource is GX's generic `add_sql`.
+- **GX's native column expectations do not compile on ClickHouse.** They render
+  `CAST(1, 'Decimal(None, None)')`, which ClickHouse rejects with `Code: 43
+  ILLEGAL_TYPE_OF_ARGUMENT` — a `clickhouse-sqlalchemy` limitation affecting
+  every `expect_column_*`. Uniqueness and not-null are therefore written as SQL
+  (`UnexpectedRowsExpectation`), which reports a count rather than the offending
+  values. Custom SQL is otherwise unaffected: `NOT EXISTS`, bare `HAVING` and
+  interval arithmetic all work.
+
+The `ops` tables are MergeTree, with `mb_transform_runs` a ReplacingMergeTree
+keyed on `run_id` — ClickHouse has no `ON CONFLICT`, so re-inserting a run is
+the upsert.
 
 ## Repository layout
 

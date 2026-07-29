@@ -28,7 +28,17 @@ def schema_dir():
 
 
 def build_pipeline(destination=PRODUCTION_DESTINATION, dataset_name=DATASET_NAME):
-    """Tables land in the `raw_pylon` schema of the warehouse database.
+    """Tables land in `raw_pylon` — a ClickHouse database, a duckdb schema.
+
+    ClickHouse has no schemas, so dlt puts every table in the credentials
+    database and prefixes it with the dataset name and a separator: dataset
+    "raw_pylon" yields `raw_pylon.raw_pylon___issues`. Blanking BOTH the dataset
+    name and the separator gives plain `raw_pylon.issues` — which is what
+    Metabase shows, and what every transform and expectation is written against.
+    Blanking only the dataset name is not enough; the separator is a separate
+    destination setting and dlt falls back to the database name for the dataset.
+
+    The credentials database must therefore BE raw_pylon; compose sets that.
 
     Schema YAML is exported (and imported, when reviewed overrides exist) from
     schemas/, making schema evolution show up as a git diff.
@@ -41,12 +51,23 @@ def build_pipeline(destination=PRODUCTION_DESTINATION, dataset_name=DATASET_NAME
         kwargs["export_schema_path"] = str(export_dir)
     if import_dir.is_dir():
         kwargs["import_schema_path"] = str(import_dir)
+
+    # Computed from the destination NAME, before it is swapped for a configured
+    # factory below — interpolating the factory yields its whole repr, which dlt
+    # rejects as a working-directory name.
+    #
     # Non-production destinations get their own pipeline (working dir + state),
     # so a local duckdb smoke run can't advance the production incremental
     # cursor that lives in the shared <DLT_DATA_DIR>/pipelines/<name> state.
     pipeline_name = (
         PIPELINE_NAME if destination == PRODUCTION_DESTINATION else f"{PIPELINE_NAME}_{destination}"
     )
+
+    if destination == "clickhouse":
+        from dlt.destinations import clickhouse
+
+        dataset_name = ""
+        destination = clickhouse(dataset_table_separator="")
     return dlt.pipeline(
         pipeline_name=pipeline_name,
         destination=destination,

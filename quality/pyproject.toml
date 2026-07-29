@@ -6,9 +6,14 @@ requires-python = ">=3.11,<3.14"
 dependencies = [
     # Exact pin: Great Expectations moves its Core API between minors, so an
     # upgrade is a deliberate event with a test run attached, never a drift.
-    "great-expectations[postgresql]==1.19.1",
+    # NOT great-expectations[clickhouse]: that extra is unsatisfiable on
+    # Python 3.12 — it pins sqlalchemy<2 while requiring
+    # clickhouse-sqlalchemy>=0.3, which requires sqlalchemy>=2. The dialect
+    # is a direct dependency instead.
+    "great-expectations==1.19.1",
+    "clickhouse-sqlalchemy>=0.3.2,<0.4",   # SQLAlchemy dialect, for GX
+    "clickhouse-connect>=0.8",             # native client, for the ops writes
     "click>=8.1",
-    "psycopg[binary]>=3.1",
     "PyYAML>=6.0",
     "python-dotenv>=1.0",
 ]

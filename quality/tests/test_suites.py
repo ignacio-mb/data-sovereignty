@@ -17,10 +17,16 @@ def descriptions(expectations):
 
 
 def columns_required_present(expectations):
+    """Columns asserted non-null.
+
+    Read off the description rather than a `column` attribute: on ClickHouse
+    these are UnexpectedRowsExpectations, not GX column expectations. See
+    suites.raw_pylon.not_null for why.
+    """
     return [
-        expectation.column
-        for expectation in expectations
-        if expectation.expectation_type == "expect_column_values_to_not_be_null"
+        text.split(" is never null")[0].split(".")[-1]
+        for text in descriptions(expectations)
+        if text.endswith(" is never null")
     ]
 
 
@@ -32,9 +38,9 @@ class TestRawSuites:
 
     def test_every_table_asserts_its_merge_key(self):
         for (_, table), suite in raw_pylon.build().items():
-            types = expectation_types(suite)
-            assert "expect_column_values_to_be_unique" in types, table
-            assert "expect_column_values_to_not_be_null" in types, table
+            texts = descriptions(suite)
+            assert f"{table}.id is unique" in texts, table
+            assert f"{table}.id is never null" in texts, table
 
     def test_only_soft_deleted_tables_get_the_tombstone_check(self):
         suites = raw_pylon.build()
@@ -132,15 +138,21 @@ MANIFEST = {
 
 
 class TestMartSuites:
-    def test_single_column_grain_uses_the_native_uniqueness_check(self):
+    def test_single_column_grain_is_checked_as_sql_too(self):
+        """Both arities take the GROUP BY ... HAVING form.
+
+        The native uniqueness expectation reports the offending values and would
+        be preferable, but it does not compile on ClickHouse.
+        """
         suite = marts.build(MANIFEST)[("analytics", "fact_issue")]
-        assert "expect_column_values_to_be_unique" in expectation_types(suite)
+        assert "expect_column_values_to_be_unique" not in expectation_types(suite)
+        assert any("grain (issue_id) is unique" in text for text in descriptions(suite))
 
     def test_compound_grain_is_checked_as_a_whole(self):
         suite = marts.build(MANIFEST)[("analytics", "metrics_support_daily")]
         # A per-column uniqueness check would be wrong here: day alone repeats.
-        assert "expect_column_values_to_be_unique" not in expectation_types(suite)
         assert any("grain (day, team_id) is unique" in text for text in descriptions(suite))
+        assert not any(text.startswith("day is unique") for text in descriptions(suite))
 
     def test_grain_columns_are_also_required_to_be_present(self):
         suite = marts.build(MANIFEST)[("analytics", "metrics_support_daily")]
@@ -199,8 +211,8 @@ class TestExceptionSummary:
     def test_a_traceback_without_a_message_falls_back_to_its_last_line(self):
         summary = results._exception_summary(self.result(
             {"raised_exception": True,
-             "exception_traceback": "Traceback:\n  File x\npsycopg.errors.SyntaxError: nope\n"}))
-        assert summary == "psycopg.errors.SyntaxError: nope"
+             "exception_traceback": "Traceback:\n  File x\nclickhouse_connect.driver.exceptions.DatabaseError: nope\n"}))
+        assert summary == "clickhouse_connect.driver.exceptions.DatabaseError: nope"
 
     def test_a_long_message_is_truncated(self):
         summary = results._exception_summary(self.result(
@@ -210,16 +222,17 @@ class TestExceptionSummary:
 
 class TestConfig:
     def test_connection_string_prefers_the_dlt_env_vars(self, monkeypatch):
-        monkeypatch.setenv("DESTINATION__POSTGRES__CREDENTIALS__HOST", "warehouse-db")
-        monkeypatch.setenv("DESTINATION__POSTGRES__CREDENTIALS__PORT", "5432")
-        assert "@warehouse-db:5432/" in config.connection_string()
+        monkeypatch.setenv("DESTINATION__CLICKHOUSE__CREDENTIALS__HOST", "warehouse-db")
+        monkeypatch.setenv("DESTINATION__CLICKHOUSE__CREDENTIALS__HTTP_PORT", "8123")
+        assert "@warehouse-db:8123/" in config.connection_string()
+        assert config.connection_string().startswith("clickhouse+http://")
 
     def test_password_special_characters_survive_the_url(self, monkeypatch):
-        monkeypatch.setenv("DESTINATION__POSTGRES__CREDENTIALS__PASSWORD", "p@ss/word")
+        monkeypatch.setenv("DESTINATION__CLICKHOUSE__CREDENTIALS__PASSWORD", "p@ss/word")
         assert "p%40ss%2Fword" in config.connection_string()
 
     def test_blank_env_var_falls_back_to_the_default(self, monkeypatch):
-        monkeypatch.setenv("DESTINATION__POSTGRES__CREDENTIALS__HOST", "")
+        monkeypatch.setenv("DESTINATION__CLICKHOUSE__CREDENTIALS__HOST", "")
         assert "@localhost:" in config.connection_string()
 
     def test_freshness_hours_rejects_nonsense(self, monkeypatch):

@@ -27,10 +27,41 @@ MAX_DELETED_FRACTION = 0.5
 REQUIRED_TABLES = ("issues",)
 
 
+def not_null(table, column):
+    """`column` is never null, expressed as SQL rather than as GX's own
+    ExpectColumnValuesToNotBeNull.
+
+    GX's column expectations compile to `multiIf(cond, CAST(1, Numeric), ...)`,
+    and SQLAlchemy renders an unparameterized Numeric as `Decimal(None, None)`,
+    which ClickHouse rejects outright:
+
+        Code: 43. DB::Exception: Decimal argument precision is invalid
+
+    That is a clickhouse-sqlalchemy limitation, and it applies to every
+    `expect_column_*`. Custom SQL is unaffected, so the whole raw layer is
+    written that way. The cost is that a failure reports a count instead of the
+    offending values.
+    """
+    return gxe.UnexpectedRowsExpectation(
+        unexpected_rows_query=f"SELECT 1 FROM {{batch}} WHERE {column} IS NULL",
+        description=f"{table}.{column} is never null",
+    )
+
+
+def unique(table, column):
+    """`column` has no duplicates. Same reason as not_null for the SQL form."""
+    return gxe.UnexpectedRowsExpectation(
+        unexpected_rows_query=(
+            f"SELECT {column} FROM {{batch}} GROUP BY {column} HAVING count(*) > 1"
+        ),
+        description=f"{table}.{column} is unique",
+    )
+
+
 def _identity(table):
     return [
-        gxe.ExpectColumnValuesToNotBeNull(column="id"),
-        gxe.ExpectColumnValuesToBeUnique(column="id"),
+        not_null(table, "id"),
+        unique(table, "id"),
         gxe.ExpectTableRowCountToBeBetween(
             min_value=1,
             description=f"{table} has at least one row (an empty table means the fetch failed silently)",
@@ -53,7 +84,7 @@ def _freshness(table, column):
     hours = freshness_hours()
     return gxe.UnexpectedRowsExpectation(
         unexpected_rows_query=(
-            f"SELECT 1 FROM {{batch}} HAVING max({column}) < now() - interval '{hours} hours'"
+            f"SELECT 1 FROM {{batch}} HAVING max({column}) < now() - INTERVAL {hours} HOUR"
         ),
         description=(
             f"{table}.{column} is within the last {hours}h "
@@ -121,7 +152,7 @@ def build(present=None):
     # updated_at, so a stale max means ingestion stopped advancing.
     if landed("issues"):
         suites[(RAW_SCHEMA, "issues")] += [
-            gxe.ExpectColumnValuesToNotBeNull(column="created_at"),
+            not_null("issues", "created_at"),
             _freshness("issues", "updated_at"),
         ]
         if landed("accounts"):
@@ -131,8 +162,8 @@ def build(present=None):
 
     if landed("issue_messages"):
         suites[(RAW_SCHEMA, "issue_messages")] += [
-            gxe.ExpectColumnValuesToNotBeNull(column="issue_id"),
-            gxe.ExpectColumnValuesToNotBeNull(column="timestamp"),
+            not_null("issue_messages", "issue_id"),
+            not_null("issue_messages", "timestamp"),
         ]
         if landed("issues"):
             suites[(RAW_SCHEMA, "issue_messages")].append(

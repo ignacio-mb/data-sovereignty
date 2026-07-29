@@ -9,9 +9,8 @@ of what happened lives in ops.gx_results and the rendered data docs.
 import logging
 
 import great_expectations as gx
-import psycopg
 
-from .config import connection_string, docs_dir, psycopg_dsn
+from .config import clickhouse_client_kwargs, connection_string, docs_dir
 
 log = logging.getLogger(__name__)
 
@@ -22,18 +21,31 @@ def build_context():
     return gx.get_context(mode="ephemeral")
 
 
-def present_tables(schema, dsn=None):
-    """The table names that actually exist in `schema`.
+def clickhouse_client(database=None):
+    """A clickhouse-connect client. Callers close it."""
+    import clickhouse_connect
+
+    kwargs = clickhouse_client_kwargs()
+    if database:
+        kwargs["database"] = database
+    return clickhouse_connect.get_client(**kwargs)
+
+
+def present_tables(schema):
+    """The table names that actually exist in `schema` (a ClickHouse database).
 
     Asked before the checkpoint is assembled, because GX test-connects every
     asset while building it: one absent table raises TestConnectionError and
     takes the whole checkpoint down with it, including the tables that were fine.
     """
-    with psycopg.connect(dsn or psycopg_dsn()) as conn:
-        rows = conn.execute(
-            "SELECT table_name FROM information_schema.tables WHERE table_schema = %s",
-            (schema,),
-        ).fetchall()
+    client = clickhouse_client()
+    try:
+        rows = client.query(
+            "SELECT name FROM system.tables WHERE database = {db:String}",
+            parameters={"db": schema},
+        ).result_rows
+    finally:
+        client.close()
     return {row[0] for row in rows}
 
 
@@ -43,7 +55,9 @@ def table_batch_definition(context, schema, table):
     try:
         datasource = context.data_sources.get(DATASOURCE)
     except (KeyError, ValueError):
-        datasource = context.data_sources.add_postgres(
+        # add_sql, not a ClickHouse-specific helper: GX has none. See
+        # config.connection_string for why the [clickhouse] extra is unusable.
+        datasource = context.data_sources.add_sql(
             DATASOURCE, connection_string=connection_string()
         )
 

@@ -4,20 +4,18 @@ import json
 import logging
 import os
 
-import psycopg
-
-from .config import OPS_SCHEMA, psycopg_dsn
+from .config import OPS_SCHEMA
 
 log = logging.getLogger(__name__)
 
-INSERT = f"""
-INSERT INTO {OPS_SCHEMA}.gx_results
-    (checkpoint, suite, asset, expectation, column_name, success, severity,
-     description, observed_value, details, dag_id, dag_run_id, task_id)
-VALUES (%(checkpoint)s, %(suite)s, %(asset)s, %(expectation)s, %(column_name)s,
-        %(success)s, %(severity)s, %(description)s, %(observed_value)s, %(details)s,
-        %(dag_id)s, %(dag_run_id)s, %(task_id)s)
-"""
+# Column order for the clickhouse-connect insert. ClickHouse takes rows as
+# positional lists rather than named parameters, so this tuple is the contract
+# between flatten() and write().
+COLUMNS = (
+    "checkpoint", "suite", "asset", "expectation", "column_name", "success",
+    "severity", "description", "observed_value", "details",
+    "dag_id", "dag_run_id", "task_id",
+)
 
 
 def airflow_context():
@@ -112,11 +110,20 @@ def _asset_name(validation_result):
     return validation_result.suite_name
 
 
-def write(rows, dsn=None):
+def write(rows):
     if not rows:
         log.warning("no validation results to persist")
         return 0
-    with psycopg.connect(dsn or psycopg_dsn(), autocommit=True) as conn, conn.cursor() as cur:
-        cur.executemany(INSERT, rows)
+    from .context import clickhouse_client
+
+    client = clickhouse_client(database=OPS_SCHEMA)
+    try:
+        client.insert(
+            "gx_results",
+            [[row[column] for column in COLUMNS] for row in rows],
+            column_names=list(COLUMNS),
+        )
+    finally:
+        client.close()
     log.info("wrote %d rows to %s.gx_results", len(rows), OPS_SCHEMA)
     return len(rows)

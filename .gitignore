@@ -35,3 +35,7 @@ metabase/.state/
 
 # A locally packed mb-cli; the .gitkeep beside it is tracked
 docker/airflow/vendor/*.tgz
+
+# Local run logs from interactive work
+.ingest.log
+.build.log

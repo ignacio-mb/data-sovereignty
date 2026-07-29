@@ -6,8 +6,10 @@ BACKFILL_START = "2019-01-01"
 
 # The real warehouse. Any other destination is a smoke test and gets its own
 # dlt pipeline name so it can never advance the production incremental cursor.
-PRODUCTION_DESTINATION = "postgres"
-# Schema the raw tables land in, inside the warehouse database.
+PRODUCTION_DESTINATION = "clickhouse"
+# Where the raw tables land. ClickHouse has no schemas, so this names a
+# DATABASE; on duckdb the same string is a schema. See build_pipeline for why
+# ClickHouse needs the dataset name passed differently.
 DATASET_NAME = "raw_pylon"
 
 # Requests per minute per endpoint family, from https://docs.usepylon.com.

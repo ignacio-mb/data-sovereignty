@@ -1,7 +1,12 @@
 """Warehouse connection details, read from the same env vars dlt uses.
 
 One source of truth: whatever loaded the data is what we validate against, on
-the host (localhost:5434) and in a container (warehouse-db:5432) alike.
+the host (localhost, published ports) and in a container (warehouse-db, internal
+ports) alike.
+
+ClickHouse has no schemas — a "schema" is a database — so the three names below
+are databases. Everything qualifies its table names, so which one the connection
+happens to select is immaterial.
 """
 
 import os
@@ -15,13 +20,17 @@ OPS_SCHEMA = "ops"
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
 MANIFEST_PATH = PROJECT_ROOT / "metabase" / "transforms" / "manifest.yml"
 
-_PREFIX = "DESTINATION__POSTGRES__CREDENTIALS__"
+_PREFIX = "DESTINATION__CLICKHOUSE__CREDENTIALS__"
 _DEFAULTS = {
     "HOST": "localhost",
-    "PORT": "5434",
+    # The native protocol port. Everything here talks HTTP instead, because
+    # that is what clickhouse-connect and the SQLAlchemy dialect use.
+    "PORT": "9001",
+    "HTTP_PORT": "8124",
     "USERNAME": "warehouse",
     "PASSWORD": "warehouse",
-    "DATABASE": "warehouse",
+    "DATABASE": "raw_pylon",
+    "SECURE": "0",
 }
 
 
@@ -35,24 +44,42 @@ def _credential(name):
 
 
 def connection_string():
-    """SQLAlchemy URL for the warehouse."""
+    """SQLAlchemy URL for the warehouse.
+
+    `clickhouse+http`, not the native protocol: Great Expectations reflects
+    tables through SQLAlchemy, and the HTTP dialect is the one clickhouse-
+    sqlalchemy supports best.
+
+    Note this deliberately does NOT come from GX's `great-expectations
+    [clickhouse]` extra, which cannot be installed: it pins sqlalchemy<2 while
+    requiring clickhouse-sqlalchemy>=0.3, which requires sqlalchemy>=2. The
+    dialect is a direct dependency instead.
+    """
     from urllib.parse import quote_plus
 
     user = quote_plus(_credential("USERNAME"))
     password = quote_plus(_credential("PASSWORD"))
     host = _credential("HOST")
-    port = _credential("PORT")
+    port = _credential("HTTP_PORT")
     database = _credential("DATABASE")
-    return f"postgresql+psycopg://{user}:{password}@{host}:{port}/{database}"
+    scheme = "clickhouse+https" if _credential("SECURE") == "1" else "clickhouse+http"
+    return f"{scheme}://{user}:{password}@{host}:{port}/{database}"
 
 
-def psycopg_dsn():
-    """libpq DSN for the direct psycopg writes into the ops schema."""
-    return (
-        f"host={_credential('HOST')} port={_credential('PORT')} "
-        f"user={_credential('USERNAME')} password={_credential('PASSWORD')} "
-        f"dbname={_credential('DATABASE')}"
-    )
+def clickhouse_client_kwargs():
+    """Arguments for clickhouse_connect.get_client(), used for the ops writes.
+
+    The ops tables are written with plain INSERTs rather than through
+    SQLAlchemy: they are append-only and the driver's own client is simpler and
+    faster for that than reflecting a table it already knows the shape of.
+    """
+    return {
+        "host": _credential("HOST"),
+        "port": int(_credential("HTTP_PORT")),
+        "username": _credential("USERNAME"),
+        "password": _credential("PASSWORD"),
+        "secure": _credential("SECURE") == "1",
+    }
 
 
 def freshness_hours():

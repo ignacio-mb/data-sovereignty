@@ -32,14 +32,18 @@ x-airflow-env: &airflow-env
   DLT_DATA_DIR: /opt/dlt-state
   PYLON_API_KEY: ${PYLON_API_KEY}
 
-  # Container-facing warehouse credentials. These deliberately override whatever
-  # is in .env (which holds the host-facing localhost:5434 values), so neither
-  # side ever has to think about which network it is on.
-  DESTINATION__POSTGRES__CREDENTIALS__HOST: warehouse-db
-  DESTINATION__POSTGRES__CREDENTIALS__PORT: '5432'
-  DESTINATION__POSTGRES__CREDENTIALS__USERNAME: ${WAREHOUSE_USER}
-  DESTINATION__POSTGRES__CREDENTIALS__PASSWORD: ${WAREHOUSE_PASSWORD}
-  DESTINATION__POSTGRES__CREDENTIALS__DATABASE: ${WAREHOUSE_DB}
+  # Container-side view of the warehouse. These deliberately override whatever
+  # is in .env (which holds the host-facing localhost values), so neither side
+  # ever has to think about which network it is on.
+  DESTINATION__CLICKHOUSE__CREDENTIALS__HOST: warehouse-db
+  DESTINATION__CLICKHOUSE__CREDENTIALS__PORT: '9000'
+  DESTINATION__CLICKHOUSE__CREDENTIALS__HTTP_PORT: '8123'
+  DESTINATION__CLICKHOUSE__CREDENTIALS__USERNAME: ${WAREHOUSE_USER}
+  DESTINATION__CLICKHOUSE__CREDENTIALS__PASSWORD: ${WAREHOUSE_PASSWORD}
+  # dlt writes into raw_pylon itself, not into a dataset inside another
+  # database — see build_pipeline for why an empty dataset name is required.
+  DESTINATION__CLICKHOUSE__CREDENTIALS__DATABASE: raw_pylon
+  DESTINATION__CLICKHOUSE__CREDENTIALS__SECURE: '0'
 
   # ── Metabase CLI ──
   MB_URL: http://metabase:3000
@@ -98,20 +102,35 @@ services:
 
   # The warehouse. raw_pylon (dlt), analytics (Metabase transforms), ops (dq).
   warehouse-db:
-    <<: *pg-base
+    image: ${CLICKHOUSE_IMAGE:-clickhouse/clickhouse-server:24.8-alpine}
+    restart: unless-stopped
     environment:
-      POSTGRES_USER: ${WAREHOUSE_USER}
-      POSTGRES_PASSWORD: ${WAREHOUSE_PASSWORD}
-      POSTGRES_DB: ${WAREHOUSE_DB}
+      CLICKHOUSE_USER: ${WAREHOUSE_USER}
+      CLICKHOUSE_PASSWORD: ${WAREHOUSE_PASSWORD}
+      CLICKHOUSE_DB: ${WAREHOUSE_DB}
+      # Lets the init SQL below issue CREATE DATABASE and GRANT.
+      CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT: '1'
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
-      interval: 2s
+      # /ping answers before the server will accept queries on 9000, but it is
+      # the only check that needs no credentials.
+      test: ["CMD-SHELL", "wget -qO- http://localhost:8123/ping | grep -q Ok"]
+      interval: 3s
       timeout: 5s
-      retries: 30
+      retries: 40
+      start_period: 10s
+    ulimits:
+      # ClickHouse refuses to start with the default container limit.
+      nofile:
+        soft: 262144
+        hard: 262144
+    # Left unbounded, ClickHouse sizes its caches against the whole host and
+    # will happily starve Metabase and Airflow on a laptop.
+    mem_limit: ${CLICKHOUSE_MEM_LIMIT:-4g}
     ports:
-      - "${WAREHOUSE_HOST_PORT:-5434}:5432"
+      - "${WAREHOUSE_HTTP_PORT:-8124}:8123"    # HTTP — dlt, GX, Metabase
+      - "${WAREHOUSE_NATIVE_PORT:-9001}:9000"  # native — clickhouse-client
     volumes:
-      - warehouse-data:/var/lib/postgresql/data
+      - warehouse-data:/var/lib/clickhouse
       # Runs once, on first init of an empty volume.
       - ./warehouse/init:/docker-entrypoint-initdb.d:ro
 

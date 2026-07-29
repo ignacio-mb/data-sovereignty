@@ -66,8 +66,16 @@ COPY metabase/src ./metabase/src
 ENV UV_PROJECT_ENVIRONMENT=/opt/data-venv \
     UV_COMPILE_BYTECODE=1 \
     UV_LINK_MODE=copy
+# gcc and the Python headers are build-time only. clickhouse-sqlalchemy depends
+# on asynch, which depends on zstd, which publishes no linux/arm64 wheel and so
+# compiles from source. They are purged in the same layer to keep the runtime
+# image free of a toolchain.
 RUN set -eux; \
+    apt-get update; \
+    apt-get install -y --no-install-recommends gcc python3-dev libc6-dev; \
     uv sync --frozen --no-dev; \
+    apt-get purge -y --auto-remove gcc python3-dev libc6-dev; \
+    rm -rf /var/lib/apt/lists/*; \
     for tool in pylon dq mbx; do ln -sf /opt/data-venv/bin/$tool /usr/local/bin/$tool; done; \
     chown -R airflow:0 /opt/data-venv /opt/project
 

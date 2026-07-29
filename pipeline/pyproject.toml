@@ -4,7 +4,7 @@ version = "0.1.0"
 description = "Pylon -> Postgres ingestion (dlt)"
 requires-python = ">=3.11"
 dependencies = [
-    "dlt[postgres]>=1.28.1,<2",
+    "dlt[clickhouse]>=1.28.1,<2",
     "beautifulsoup4>=4.12",
     "click>=8.1",
     "pendulum>=3.0",
@@ -32,9 +32,9 @@ packages = ["src/pylon_pipeline"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 markers = [
-    "postgres: needs a live warehouse; deselected by default, run via `make test-postgres`",
+    "clickhouse: needs a live warehouse; deselected by default, run via `make test-warehouse`",
 ]
-addopts = "-m 'not postgres'"
+addopts = "-m 'not clickhouse'"
 
 [tool.ruff]
 line-length = 110

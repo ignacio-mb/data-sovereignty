@@ -5,8 +5,8 @@ COMPOSE := docker compose
 # Run one-off commands in the Airflow image: it has pylon, dq, mbx and mb on PATH.
 RUN := $(COMPOSE) --profile cli run --rm airflow-cli
 
-.PHONY: help env up down nuke bootstrap ingest backfill quality docs status logs psql \
-        test test-postgres build mb-audit mb-transforms mb-semantics mb-metadata \
+.PHONY: help env up down nuke bootstrap ingest backfill quality docs status logs ch \
+        test test-warehouse build mb-audit mb-transforms mb-semantics mb-metadata \
         mb-dashboards mb-sync
 
 help: ## Show this help
@@ -110,15 +110,15 @@ status: ## Show service health and host URLs
 logs: ## Tail logs: make logs [S=metabase]
 	$(COMPOSE) logs -f --tail=100 $(S)
 
-psql: ## Open a psql shell on the warehouse
+ch: ## Open a clickhouse-client shell on the warehouse
 	@set -a; . ./.env; set +a; \
-	 $(COMPOSE) exec -e PGPASSWORD="$$WAREHOUSE_PASSWORD" warehouse-db \
-	   psql -U "$$WAREHOUSE_USER" -d "$$WAREHOUSE_DB"
+	 $(COMPOSE) exec warehouse-db \
+	   clickhouse-client --user "$$WAREHOUSE_USER" --password "$$WAREHOUSE_PASSWORD"
 
 # ─── Tests ───────────────────────────────────────────────────────────────────
 
 test: ## Run the offline test suite (mocked API, duckdb, no network)
 	uv run pytest
 
-test-postgres: ## Run tests that need the live warehouse
-	uv run pytest -m postgres
+test-warehouse: ## Run tests that need the live warehouse
+	uv run pytest -m clickhouse

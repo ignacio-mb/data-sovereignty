@@ -11,6 +11,7 @@ import yaml
 from great_expectations import expectations as gxe
 
 from ..config import ANALYTICS_SCHEMA, MANIFEST_PATH
+from .raw_pylon import not_null
 
 log = logging.getLogger(__name__)
 
@@ -27,10 +28,13 @@ def load_manifest(path=None):
 
 
 def _grain(columns):
-    """A compound grain has to be checked as a whole; a single column can use
-    the native uniqueness expectation, which reports the offending values."""
-    if len(columns) == 1:
-        return gxe.ExpectColumnValuesToBeUnique(column=columns[0])
+    """Grain uniqueness, as SQL for one column or many.
+
+    Single-column grains used to use GX's native ExpectColumnValuesToBeUnique,
+    which reports the offending values. It does not compile on ClickHouse — see
+    suites.raw_pylon.not_null for the dialect limitation — so both arities take
+    the same GROUP BY ... HAVING form now.
+    """
     joined = ", ".join(columns)
     return gxe.UnexpectedRowsExpectation(
         unexpected_rows_query=(
@@ -56,12 +60,12 @@ def build(manifest=None):
         grain = transform.get("grain") or []
         if grain:
             expectations.append(_grain(grain))
-            expectations += [gxe.ExpectColumnValuesToNotBeNull(column=column) for column in grain]
+            expectations += [not_null(name, column) for column in grain]
         else:
             log.warning("transform %s declares no grain — skipping the uniqueness check", name)
 
         expectations += [
-            gxe.ExpectColumnValuesToNotBeNull(column=column)
+            not_null(name, column)
             for column in (transform.get("not_null") or [])
             if column not in grain
         ]
