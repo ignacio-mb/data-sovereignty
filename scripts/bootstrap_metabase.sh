@@ -17,12 +17,15 @@
 # credential resolution, retries, redaction and a versioned contract, and
 # re-implementing any of that against the REST API means owning it forever.
 #
-# Exactly three things here have no `mb` command and therefore use curl:
+# Four things here use curl, because `mb` either has no command for them or
+# cannot run before the credential it needs exists:
 #   * the health poll                  (there is no `mb health`)
+#   * the setup wizard                 (`mb setup` demands the API key that
+#                                       setup itself creates)
 #   * password-based session login     (`mb auth login` wants an API key)
 #   * creating a database connection and an API key
-# Each is marked below. If a future mb release adds a command for one of them,
-# delete the curl.
+# Each is marked below. If a future mb release fixes one of them, delete the
+# curl.
 #
 # Requires bash, curl, jq, and mb (npm install -g @metabase/cli).
 
@@ -100,13 +103,22 @@ SETUP_TOKEN="$(jq -r '.["setup-token"] // empty' <<<"$PROPS")"
 
 if [[ "$HAS_USER_SETUP" != "true" && -n "$SETUP_TOKEN" ]]; then
   echo "==> Running the setup wizard"
+  # curl: `mb setup` exists, but it runs the CLI's credential preflight first
+  # and aborts with "Not authenticated for profile default" — on an instance
+  # whose whole point is that no account exists yet. The credential it wants is
+  # the one this call creates. Chicken and egg, so raw REST.
+  #
+  # This only bites on a genuinely fresh Metabase. Any .env that has been
+  # through a bootstrap already carries MB_API_KEY, which satisfies the
+  # preflight and hides the problem completely.
   jq -n --arg token "$SETUP_TOKEN" --arg email "$MB_ADMIN_EMAIL" \
         --arg password "$MB_ADMIN_PASSWORD" --arg first "$ADMIN_FIRST" \
         --arg last "$ADMIN_LAST" --arg site "$MB_SITE_NAME" \
     '{token: $token,
       user: {email: $email, password: $password, first_name: $first, last_name: $last},
       prefs: {site_name: $site}}' \
-    | mb setup --file /dev/stdin --json --max-bytes 0 >/dev/null
+    | curl -fsS -X POST "${MB_URL}/api/setup" \
+        -H 'Content-Type: application/json' --data @- >/dev/null
   note "created admin ${MB_ADMIN_EMAIL}"
 else
   note "already set up"
