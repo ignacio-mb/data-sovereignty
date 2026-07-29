@@ -18,10 +18,14 @@ CREATE DATABASE IF NOT EXISTS raw_pylon;
 CREATE DATABASE IF NOT EXISTS analytics;
 CREATE DATABASE IF NOT EXISTS ops;
 
--- Single warehouse role for a laptop-scale stack: dlt, Great Expectations and
--- Metabase all connect as it. It needs CREATE DATABASE because dlt and Metabase
--- each create their own. Splitting reader/writer roles is the obvious hardening
--- step if this ever leaves a development machine.
-GRANT CREATE DATABASE ON *.* TO CURRENT_USER;
-GRANT CREATE TABLE, CREATE VIEW, DROP TABLE, DROP VIEW, TRUNCATE, ALTER,
-      SELECT, INSERT, OPTIMIZE, SHOW ON *.* TO CURRENT_USER;
+-- No GRANTs here, deliberately. CLICKHOUSE_USER makes the entrypoint define the
+-- user in users.xml, and that storage is read-only to SQL: any GRANT aborts the
+-- whole init with "Code: 495 ... Cannot update user `warehouse` in users_xml
+-- because this storage is readonly", leaving the container unhealthy forever.
+-- The grants were also redundant — an XML-defined user already has full access,
+-- verified against this image for every operation the stack performs: CREATE
+-- DATABASE, CREATE/DROP TABLE and VIEW, INSERT, SELECT, ALTER, OPTIMIZE,
+-- TRUNCATE, SHOW, and reading system.tables.
+--
+-- Splitting reader from writer is still the obvious hardening step, but it has
+-- to be done in a users.d/*.xml file mounted into the server, not from here.

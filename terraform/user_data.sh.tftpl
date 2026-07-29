@@ -55,10 +55,19 @@ chown "$OPERATOR:$OPERATOR" /data
 # ─── 2. Docker, configured before it ever starts ─────────────────────────────
 # data-root must be set before the first daemon start: moving it afterwards
 # means migrating images and volumes by hand.
+#
+# The snapshotter setting is load-bearing, not a preference. With the
+# containerd image store enabled, data-root governs volumes but NOT images —
+# those go to containerd's own content store under /var/lib/containerd, on the
+# root volume. The Airflow image is about 5 GB, so the first build fills a
+# 20 GB root disk and dies with "no space left on device" while /data sits
+# empty. Turning it off puts images back under data-root, which is what makes
+# a single snapshot of /data capture the whole stack.
 mkdir -p /etc/docker
 cat >/etc/docker/daemon.json <<'JSON'
 {
   "data-root": "/data/docker",
+  "features": { "containerd-snapshotter": false },
   "log-driver": "json-file",
   "log-opts": { "max-size": "10m", "max-file": "3" },
   "live-restore": true
