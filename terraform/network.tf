@@ -86,8 +86,10 @@ resource "aws_route_table_association" "main" {
 }
 
 resource "aws_security_group" "instance" {
-  name        = "${var.project}-instance"
-  description = "Egress only. No ingress rules — access is through SSM."
+  name = "${var.project}-instance"
+  # ASCII only: EC2 rejects anything else in a group description, and this
+  # repository's prose uses em-dashes everywhere else.
+  description = "Egress only. No ingress rules: access is through SSM."
   vpc_id      = local.vpc_id
 
   tags = { Name = var.project }

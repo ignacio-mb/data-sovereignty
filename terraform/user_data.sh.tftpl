@@ -46,6 +46,12 @@ grep -q '^LABEL=data ' /etc/fstab || \
   echo 'LABEL=data /data ext4 defaults,noatime,nofail 0 2' >>/etc/fstab
 mountpoint -q /data || mount /data
 
+# A freshly formatted volume mounts root-owned, and everything on it belongs to
+# the stack: the checkout, the deploy logs, and Docker's data-root. Without
+# this the non-root clone below cannot create its own directory. Not recursive
+# — /data/docker is dockerd's and must stay root-owned.
+chown "$OPERATOR:$OPERATOR" /data
+
 # ─── 2. Docker, configured before it ever starts ─────────────────────────────
 # data-root must be set before the first daemon start: moving it afterwards
 # means migrating images and volumes by hand.
