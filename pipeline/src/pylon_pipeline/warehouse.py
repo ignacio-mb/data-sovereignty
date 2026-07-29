@@ -31,12 +31,16 @@ def build_pipeline(destination=PRODUCTION_DESTINATION, dataset_name=DATASET_NAME
     """Tables land in `raw_pylon` — a ClickHouse database, a duckdb schema.
 
     ClickHouse has no schemas, so dlt puts every table in the credentials
-    database and prefixes it with the dataset name and a separator: dataset
-    "raw_pylon" yields `raw_pylon.raw_pylon___issues`. Blanking BOTH the dataset
-    name and the separator gives plain `raw_pylon.issues` — which is what
-    Metabase shows, and what every transform and expectation is written against.
-    Blanking only the dataset name is not enough; the separator is a separate
-    destination setting and dlt falls back to the database name for the dataset.
+    database and prefixes it with the dataset name: dataset "raw_pylon" yields
+    `raw_pylon.raw_pylon___issues`. An EMPTY dataset name makes dlt skip the
+    prefix entirely — `make_qualified_table_name_path` falls through to the bare
+    table name — so the tables are plain `raw_pylon.issues`, which is what
+    Metabase shows and what every transform and expectation is written against.
+
+    Blanking `dataset_table_separator` as well is tempting and wrong. It changes
+    nothing for these tables (there is no prefix left to separate) and it does
+    reach the staging dataset, whose layout is `%s_staging`, turning
+    `_staging___issues` into the unreadable `_stagingissues`.
 
     The credentials database must therefore BE raw_pylon; compose sets that.
 
@@ -64,10 +68,7 @@ def build_pipeline(destination=PRODUCTION_DESTINATION, dataset_name=DATASET_NAME
     )
 
     if destination == "clickhouse":
-        from dlt.destinations import clickhouse
-
         dataset_name = ""
-        destination = clickhouse(dataset_table_separator="")
     return dlt.pipeline(
         pipeline_name=pipeline_name,
         destination=destination,
