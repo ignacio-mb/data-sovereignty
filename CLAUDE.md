@@ -47,6 +47,35 @@ Metabase transforms own `analytics`, `dq ops-init` owns `ops`.
 `dataset_table_separator`.** Leave either set and the tables come out as
 `raw_pylon.raw_pylon___issues`. See `build_pipeline`.
 
+## Data quality on ClickHouse
+
+**GX's native column expectations do not compile.** Every `expect_column_*`
+renders `CAST(1, 'Decimal(None, None)')`, which ClickHouse rejects with
+`Code: 43 ILLEGAL_TYPE_OF_ARGUMENT` — a `clickhouse-sqlalchemy` limitation, not
+something we can configure around. Uniqueness and not-null are therefore written
+as `UnexpectedRowsExpectation` SQL, which reports a count rather than the
+offending values. Custom SQL is otherwise fine: bare `HAVING` and interval
+arithmetic both work.
+
+**Referential checks are `LEFT ANTI JOIN`, never correlated `NOT EXISTS`.**
+ClickHouse rejects a subquery referencing an outer column (`Code: 1 ... only
+supported for constants and CTE`). It does not always reach that path on tiny
+inputs, so a fixture can pass while real data fails — which is exactly how this
+one was found.
+
+**GX's own `[clickhouse]` extra is unusable** on Python 3.12: it pins
+`sqlalchemy<2` while requiring `clickhouse-sqlalchemy>=0.3`, which requires
+`sqlalchemy>=2`. The dialect is a direct dependency and the datasource is GX's
+generic `add_sql`.
+
+**Advisory vs gating.** An expectation carrying `meta={"severity": "warn"}` is
+recorded and reported but does not fail the checkpoint. Anything unmarked gates,
+so being ignorable is opt-in. Freshness is the only advisory check: it measures
+when the *tenant* last touched a record, not whether ingestion works, so on a
+quiet weekend it fails while the pipeline is healthy — and a check that reddens
+the DAG for a non-problem teaches you to stop reading red DAGs. Whether a run
+happened is a question about runs, and `ops.pipeline_runs` answers it.
+
 ## Hard rules
 
 **Transforms are authored in this repo, never in the Metabase UI.** The manifest
