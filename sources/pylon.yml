@@ -68,6 +68,16 @@ resources:
         cursor_in: body         # not a query param, unlike every other endpoint
     timestamp_columns:
       [created_at, updated_at, latest_message_time, resolution_time, snoozed_until_time]
+    # Hinted, not merely parsed. dlt must type these deterministically because
+    # the incremental logic COMPARES them: updated_at is the cursor, created_at
+    # is the window filter, latest_message_time drives the messages watermark.
+    # The other two are parsed for the warehouse but nothing compares them, so
+    # inference is fine and hinting them would be maintenance without a failure
+    # it prevents.
+    hint_columns: [created_at, updated_at, latest_message_time]
+    # Absence only means "deleted" on a run that fetched all of history; on an
+    # incremental run everything outside the window is absent and innocent.
+    soft_delete: full_history
     # Lift the analytically hot nested scalars to real columns. Everything else
     # nested is JSON-stringified, so a new Pylon custom field can never mint a
     # surprise warehouse column.
@@ -94,6 +104,7 @@ resources:
       skip_statuses: [400, 404, 410]
       budget_minutes: 25        # stop cleanly; the watermark resumes next run
     timestamp_columns: [timestamp]
+    hint_columns: [timestamp]
     html_text: {message_html: message_text}
 
   # ── directory ─────────────────────────────────────────────────────────────
@@ -102,25 +113,25 @@ resources:
   - name: accounts
     primary_key: id
     write_disposition: merge
-    soft_delete: true
+    soft_delete: always
     endpoint: {path: /accounts, method: GET, page_size: 999, family: directory}
     timestamp_columns: [created_at, updated_at, latest_customer_message_time]
   - name: users
     primary_key: id
     write_disposition: merge
-    soft_delete: true
+    soft_delete: always
     endpoint: {path: /users, method: GET, page_size: 999, family: directory}
     timestamp_columns: [created_at, updated_at, latest_customer_message_time]
   - name: teams
     primary_key: id
     write_disposition: merge
-    soft_delete: true
+    soft_delete: always
     endpoint: {path: /teams, method: GET, page_size: 999, family: directory}
     timestamp_columns: [created_at, updated_at, latest_customer_message_time]
   - name: contacts
     primary_key: id
     write_disposition: merge
-    soft_delete: true
+    soft_delete: always
     endpoint: {path: /contacts, method: GET, page_size: 999, family: directory}
     timestamp_columns: [created_at, updated_at, latest_customer_message_time]
 

@@ -28,7 +28,7 @@ _TOP_LEVEL = {
 }
 _RESOURCE_KEYS = {
     "name", "primary_key", "write_disposition", "soft_delete", "endpoint",
-    "incremental", "timestamp_columns", "promote", "html_text",
+    "incremental", "timestamp_columns", "hint_columns", "promote", "html_text",
 }
 _QUALITY_KEYS = {
     "required", "freshness", "max_deleted_fraction", "references", "not_null",
@@ -37,6 +37,16 @@ _QUALITY_KEYS = {
 # Strategies the runtime knows how to build. Adding one is a code change, which
 # is the point: a strategy is a fetch algorithm, not a setting.
 _STRATEGIES = {"search_window", "parent_watermark", "full_refresh"}
+
+# When absence from a run's loads is allowed to mean "deleted upstream".
+#
+#   always        the resource is fully re-fetched every run, so anything not
+#                 seen really is gone.
+#   full_history  absence only means deleted on a run that covered all of
+#                 history. On an incremental run everything outside the window
+#                 is absent and innocent, and tombstoning it would wipe the
+#                 warehouse.
+_SOFT_DELETE_MODES = {"always", "full_history"}
 
 
 class SpecError(ValueError):
@@ -112,7 +122,35 @@ class Resource:
     incremental = property(lambda self: self._entry.get("incremental") or {})
     promote = property(lambda self: self._entry.get("promote") or {})
     html_text = property(lambda self: self._entry.get("html_text") or {})
-    soft_delete = property(lambda self: bool(self._entry.get("soft_delete")))
+    @property
+    def soft_delete(self):
+        """'always', 'full_history', or None. Never a bare bool.
+
+        The two modes are not a nuance: applying `always` to a resource that is
+        only ever fetched incrementally tombstones every row outside the current
+        window on the first run.
+        """
+        value = self._entry.get("soft_delete")
+        if value in (None, False):
+            return None
+        if value is True or value not in _SOFT_DELETE_MODES:
+            raise SpecError(
+                f"{self._where}: soft_delete must be one of "
+                f"{', '.join(sorted(_SOFT_DELETE_MODES))}, got {value!r}"
+            )
+        return value
+
+    @property
+    def hint_columns(self):
+        """Columns dlt must type deterministically because something compares them.
+
+        Defaults to every timestamp column, which is right for a simple source.
+        A resource that parses more timestamps than it compares narrows it, so a
+        column nothing depends on stays inferred rather than becoming a schema
+        commitment.
+        """
+        declared = self._entry.get("hint_columns")
+        return tuple(declared) if declared is not None else self.timestamp_columns
 
     @property
     def write_disposition(self):
@@ -201,6 +239,17 @@ class Spec:
 
     @property
     def soft_delete_tables(self):
+        """Resources whose absence always means deletion — eligible every run."""
+        return tuple(r.name for r in self.resources if r.soft_delete == "always")
+
+    @property
+    def full_history_soft_delete_tables(self):
+        """Resources tombstoned only by a run that covered all of history."""
+        return tuple(r.name for r in self.resources if r.soft_delete == "full_history")
+
+    @property
+    def tombstoned_tables(self):
+        """Every resource carrying a _deleted column, under either mode."""
         return tuple(r.name for r in self.resources if r.soft_delete)
 
     def timeout_minutes(self, task, default):

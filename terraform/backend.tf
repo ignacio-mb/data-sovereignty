@@ -6,7 +6,7 @@
 # works without editing.
 terraform {
   backend "s3" {
-    bucket = "REPLACE-ME-data-sovereignty-tfstate"
+    bucket = "metabase-data-sovereignty"
     key    = "data-sovereignty/prod.tfstate"
     region = "us-east-1"
 
