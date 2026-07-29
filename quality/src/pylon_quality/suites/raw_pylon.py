@@ -108,16 +108,33 @@ def _soft_delete_sanity(table):
 
 
 def _orphans(child_column, parent_table, description):
-    # {batch} expands to `(SELECT ... WHERE true) AS subselect` — GX supplies the
-    # alias itself, so aliasing it again is a syntax error. Wrapping it in one
-    # more subquery is what buys back a name to correlate the NOT EXISTS against,
-    # without depending on GX's alias staying called `subselect`.
+    """Child rows whose foreign key has no parent, as a LEFT ANTI JOIN.
+
+    Not a correlated `NOT EXISTS`, which is what this used to be: ClickHouse
+    rejects a subquery that references an outer column with
+
+        Code: 1. Resolve identifier 'child.account_id' from parent scope only
+        supported for constants and CTE  (UNSUPPORTED_METHOD)
+
+    A small fixture can slip through — the planner does not always reach that
+    path — so this only failed once there was real data in the table. LEFT ANTI
+    JOIN is the idiomatic form and means the same thing: keep the left rows that
+    matched nothing. Unlike a LEFT JOIN it never materializes null-filled rows,
+    so ClickHouse's join_use_nulls behaviour cannot quietly turn a miss into a
+    match.
+
+    {batch} expands to `(SELECT ... WHERE true) AS subselect` — GX supplies that
+    alias itself, so aliasing it again is a syntax error. Wrapping it in one more
+    subquery buys back a name to join against without depending on GX's alias
+    staying called `subselect`.
+    """
     return gxe.UnexpectedRowsExpectation(
         unexpected_rows_query=(
-            f"SELECT child.{child_column} FROM (SELECT {child_column} FROM {{batch}}) child "
-            f"WHERE child.{child_column} IS NOT NULL AND NOT EXISTS ("
-            f"  SELECT 1 FROM {RAW_SCHEMA}.{parent_table} parent WHERE parent.id = child.{child_column}"
-            f")"
+            f"SELECT child.{child_column} "
+            f"FROM (SELECT {child_column} FROM {{batch}}) AS child "
+            f"LEFT ANTI JOIN {RAW_SCHEMA}.{parent_table} AS parent "
+            f"ON parent.id = child.{child_column} "
+            f"WHERE child.{child_column} IS NOT NULL"
         ),
         description=description,
     )
