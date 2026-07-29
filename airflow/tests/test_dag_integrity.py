@@ -164,3 +164,24 @@ def test_nothing_writes_to_a_smoke_destination(dagbag):
         for task in dagbag.dags[dag_id].tasks:
             assert "duckdb" not in str(getattr(task, "bash_command", "")), \
                 f"{dag_id}.{task.task_id}"
+
+
+def test_the_dag_ingests_into_the_destination_the_cli_actually_accepts():
+    """The DAG's destination string must match the pipeline's production one.
+
+    DAGs shell out and never import the pipeline packages — they live in a
+    separate virtualenv — so common.py carries its own copy of the destination
+    name. That copy silently went stale during the ClickHouse migration and the
+    hourly DAG failed with:
+
+        Invalid value for '--destination': 'postgres' is not one of
+        'clickhouse', 'duckdb'
+
+    A structural DAG test cannot catch that; only comparing the two can. This
+    test may import the pipeline package precisely because it is not a DAG.
+    """
+    import common
+    from pylon_pipeline.ingest.settings import PRODUCTION_DESTINATION as cli_destination
+
+    assert common.PRODUCTION_DESTINATION == cli_destination
+    assert f"--destination {cli_destination}" in common.ingest_command()

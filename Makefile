@@ -105,7 +105,7 @@ status: ## Show service health and host URLs
 	 echo "  Metabase    http://localhost:$${METABASE_HOST_PORT:-3100}"; \
 	 echo "  Airflow     http://localhost:$${AIRFLOW_HOST_PORT:-8080}"; \
 	 echo "  Data docs   http://localhost:$${DATADOCS_HOST_PORT:-8081}"; \
-	 echo "  Warehouse   postgres://localhost:$${WAREHOUSE_HOST_PORT:-5434}/$${WAREHOUSE_DB:-warehouse}"
+	 echo "  Warehouse   clickhouse http://localhost:$${WAREHOUSE_HTTP_PORT:-8124} (native $${WAREHOUSE_NATIVE_PORT:-9001})"
 
 logs: ## Tail logs: make logs [S=metabase]
 	$(COMPOSE) logs -f --tail=100 $(S)

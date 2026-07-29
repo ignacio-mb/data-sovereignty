@@ -29,7 +29,7 @@ Ask three things, because they determine most of the design:
 workspace member with the same layout:
 
 ```
-pyproject.toml            console script, dlt[postgres]
+pyproject.toml            console script, dlt[clickhouse]
 src/<name>_pipeline/
   cli.py                  Click CLI; --destination, --summary-json
   warehouse.py            build_pipeline(); non-prod destinations get their own
