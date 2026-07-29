@@ -21,6 +21,9 @@ from .observability import attach_samplers, print_run_summary, report_schema_cha
 
 log = logging.getLogger(__name__)
 
+# This CLI drives one connector; the runtime under it is source-agnostic.
+SOURCE = "pylon"
+
 # Applied as env-var defaults so runs behave the same from any cwd (the values
 # mirror .dlt/config.toml, which dlt only reads when run from the project root).
 RUNTIME_DEFAULTS = {
@@ -71,7 +74,12 @@ def ingest(api_key, start, end, resources_csv, mode, mark_deleted_flag, sample_n
     from .ingest.client import PylonClient
     from .ingest.soft_delete import mark_deleted
     from .ingest.source import ALL_RESOURCES, pylon_source
-    from .warehouse import build_pipeline, pending_message_issue_ids, table_counts
+    from .warehouse import (
+        build_pipeline,
+        ensure_database,
+        pending_message_issue_ids,
+        table_counts,
+    )
 
     setup_logging(verbose)
 
@@ -108,7 +116,12 @@ def ingest(api_key, start, end, resources_csv, mode, mark_deleted_flag, sample_n
 
     log.info("resources: %s · destination: %s", ", ".join(selected), destination)
 
-    pipeline = build_pipeline(destination=destination)
+    # The database must exist before dlt connects: ClickHouse selects it as part
+    # of connecting, so an absent one fails the pre-run sync rather than being
+    # created on demand. warehouse/init/ cannot cover a source added later — it
+    # runs once, on first initialisation of an empty volume.
+    ensure_database(SOURCE, destination)
+    pipeline = build_pipeline(SOURCE, destination=destination)
     client = PylonClient(api_key)
 
     # A previous run may have crashed after normalize but before load, leaving a
