@@ -140,6 +140,18 @@ TMPFILES
 if [ ! -d "$REPO_DIR/.git" ]; then
   # Public repo, so cloning needs no credentials at all.
   runuser -u "$OPERATOR" -- git clone --branch "${repo_branch}" "${repo_url}" "$REPO_DIR"
+else
+  # Re-running this script has to be able to move a stale checkout forward.
+  # Without this branch, a host provisioned before the deploy scripts were on
+  # ${repo_branch} can never recover: the re-run replays against the same old
+  # tree and fails at the same line, and the thing that would normally fetch —
+  # ds-deploy — is precisely what failed to install.
+  #
+  # --ff-only so a re-run against a host mid-deploy refuses rather than
+  # clobbers.
+  runuser -u "$OPERATOR" -- git -C "$REPO_DIR" fetch --prune --no-tags origin \
+    "+refs/heads/${repo_branch}:refs/remotes/origin/${repo_branch}"
+  runuser -u "$OPERATOR" -- git -C "$REPO_DIR" merge --ff-only "origin/${repo_branch}"
 fi
 chown -R "$OPERATOR:$OPERATOR" "$REPO_DIR"
 
@@ -202,8 +214,12 @@ if [ ! -f /opt/aws/amazon-cloudwatch-agent/bin/amazon-cloudwatch-agent-ctl ]; th
   dpkg -i -E "$tmp/cwagent.deb"
   rm -rf "$tmp"
 fi
+# Not fatal: metrics are not worth failing a boot over, and the two alarms
+# treat missing data as breaching, so an agent that never starts sends an
+# email rather than sitting green.
 /opt/aws/amazon-cloudwatch-agent/bin/amazon-cloudwatch-agent-ctl \
-  -a fetch-config -m ec2 -s -c "ssm:${cw_config_param}"
+  -a fetch-config -m ec2 -s -c "ssm:${cw_config_param}" \
+  || echo "cloudwatch agent config fetch failed" >&2
 %{ endif ~}
 
 # ─── 9. Housekeeping the laptop never needed ─────────────────────────────────

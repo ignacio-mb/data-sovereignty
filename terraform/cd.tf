@@ -112,6 +112,10 @@ data "aws_iam_policy_document" "cd" {
     ]
   }
 
+  # Both of these are API-level "*" actions — SSM publishes no resource types
+  # for them, so they cannot be scoped further. Worth naming the consequence
+  # rather than leaving it implied: this role can read the output of any Run
+  # Command in the account, not only the deploys it started.
   statement {
     sid       = "PollTheResult"
     actions   = ["ssm:GetCommandInvocation", "ssm:DescribeInstanceInformation"]
