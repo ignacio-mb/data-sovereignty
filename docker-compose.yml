@@ -35,7 +35,7 @@ x-airflow-env: &airflow-env
   # rewrites the tracked pipeline/schemas/export/pylon.schema.yaml. On a host whose
   # deploy is `git reset --hard`, that is a conflict every hour. dlt reads the
   # reviewed import schema from the same directory, so airflow-init seeds it here.
-  PYLON_SCHEMA_DIR: /opt/dlt-state/schemas
+  DS_SCHEMA_DIR: /opt/dlt-state/schemas
   PYLON_API_KEY: ${PYLON_API_KEY}
 
   # Container-side view of the warehouse. These deliberately override whatever

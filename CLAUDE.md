@@ -112,7 +112,7 @@ it already loaded rows that no longer exist.
 
 **The AWS checkout is a deploy artefact, not a workspace.** Merging to `main`
 resets `/data/data-sovereignty` to it. Nothing the running stack writes may be a
-tracked path — that is why `PYLON_SCHEMA_DIR` points dlt's schema export at the
+tracked path — that is why `DS_SCHEMA_DIR` points dlt's schema export at the
 `dlt-state` volume. Work on a laptop and merge; `make hold` first if you must
 work on the box. `docs/deploy.md`.
 

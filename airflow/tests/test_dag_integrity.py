@@ -181,7 +181,7 @@ def test_the_dag_ingests_into_the_destination_the_cli_actually_accepts():
     test may import the pipeline package precisely because it is not a DAG.
     """
     import common
-    from pylon_pipeline.ingest.settings import PRODUCTION_DESTINATION as cli_destination
+    from ingest_runtime.ingest.settings import PRODUCTION_DESTINATION as cli_destination
 
     assert common.PRODUCTION_DESTINATION == cli_destination
     assert f"--destination {cli_destination}" in common.ingest_command()

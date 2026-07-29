@@ -10,7 +10,7 @@ import pathlib
 
 import pytest
 
-from pylon_pipeline import spec
+from ingest_runtime import spec
 
 MINIMAL = """
 name: t

@@ -16,7 +16,7 @@ RAW_SCHEMA = "raw_pylon"
 ANALYTICS_SCHEMA = "analytics"
 OPS_SCHEMA = "ops"
 
-# Repo root as seen from this package: quality/src/pylon_quality -> repo root.
+# Repo root as seen from this package: quality/src/quality_runtime -> repo root.
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
 MANIFEST_PATH = PROJECT_ROOT / "metabase" / "transforms" / "manifest.yml"
 

@@ -18,7 +18,7 @@ from pathlib import Path
 import yaml
 
 # sources/ sits beside pipeline/, at the repo root: this file is
-# pipeline/src/pylon_pipeline/spec.py, so three parents up is `pipeline/`.
+# pipeline/src/ingest_runtime/spec.py, so three parents up is `pipeline/`.
 REPO_ROOT = Path(__file__).resolve().parents[3]
 SOURCES_DIR_ENV = "DS_SOURCES_DIR"
 

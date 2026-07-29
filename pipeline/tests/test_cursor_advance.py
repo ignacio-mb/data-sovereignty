@@ -9,15 +9,15 @@ import pendulum
 import pytest
 from click.testing import CliRunner
 
-from pylon_pipeline.cli import cli
+from ingest_runtime.cli import cli
 
-INCREMENTAL_ARGS = ["ingest", "--api-key", "test-key", "--destination", "duckdb",
+INCREMENTAL_ARGS = ["run", "--api-key", "test-key", "--destination", "duckdb",
                     "--resources", "issues"]
 
 
 @pytest.fixture(autouse=True)
 def _no_sleep(monkeypatch):
-    monkeypatch.setattr("pylon_pipeline.ingest.pacing.time.sleep", lambda seconds: None)
+    monkeypatch.setattr("ingest_runtime.ingest.pacing.time.sleep", lambda seconds: None)
 
 
 def run_cli(args):

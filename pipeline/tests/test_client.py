@@ -1,13 +1,13 @@
 import pytest
 
-from pylon_pipeline.ingest.client import PylonClient, PylonPaginator
-from pylon_pipeline.ingest.pacing import EndpointPacer
+from ingest_runtime.ingest.client import PylonClient, PylonPaginator
+from ingest_runtime.ingest.pacing import EndpointPacer
 
 
 @pytest.fixture(autouse=True)
 def _no_glitch_sleep(monkeypatch):
     # the paginator's glitch-retry backoff uses client.time.sleep; keep tests fast
-    monkeypatch.setattr("pylon_pipeline.ingest.client.time.sleep", lambda seconds: None)
+    monkeypatch.setattr("ingest_runtime.ingest.client.time.sleep", lambda seconds: None)
 
 
 def _collect(client, path):
