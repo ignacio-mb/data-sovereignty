@@ -1,12 +1,13 @@
 ---
 name: data-stack
-description: Router for operating the self-hosted Pylon data stack — ingestion, orchestration, data quality, and pipeline health. Triggers — "ingest Pylon data", "is my pipeline healthy?", "verify the state of my success engineering department", "backfill last quarter", "why did the quality check fail?", "bring the stack up", "what changed in the warehouse?", "add a metric", "version Metabase content in git", "sync my dashboards"
+description: Router for operating the self-hosted data stack — ingestion from any REST API, orchestration, data quality, and pipeline health. Triggers — "ingest Pylon data", "connect a new API", "is my pipeline healthy?", "verify the state of my success engineering department", "backfill last quarter", "why did the quality check fail?", "bring the stack up", "what changed in the warehouse?", "add a metric", "version Metabase content in git", "sync my dashboards"
 allowed-tools: Bash, Read, Write, Edit, Glob, Grep, AskUserQuestion
 ---
 
 # Operating the data stack
 
-This repo is a self-hosted pipeline: Pylon → Postgres → Metabase. You drive it
+This repo is a self-hosted pipeline: any REST API → ClickHouse → Metabase.
+Pylon is the first source, not the only shape it fits. You drive it
 through `make` targets and three CLIs, never by clicking in the Metabase UI.
 
 **Read this file, then load exactly one leaf skill for the task.** Each leaf is
@@ -20,7 +21,8 @@ short. Loading all of them wastes context you will want for the actual work.
 | Pull data now, backfill a date range | `ingest` |
 | "Is the pipeline healthy?", "verify the whole state" | `pipeline-status` |
 | Run or interpret data-quality checks | `data-quality` |
-| Ingest from a source that is not Pylon | `add-source` |
+| Connect a new API as a source | `add-source` |
+| Work out how a third-party API behaves | `api-research` |
 
 Read the leaf with `Read .claude/skills/<name>/SKILL.md`. If a request spans two
 (e.g. "backfill Q1 and check it landed"), load them in sequence, not upfront.
@@ -80,12 +82,16 @@ transform layer" is useful. Implying full coverage you did not verify is not.
 ## The five-second orientation
 
 ```
-raw_pylon.*    six tables, loaded by dlt, merged on id
+raw_<source>.* one database per source, loaded by dlt, merged on the primary key
 analytics.*    base_ -> dim_ -> fact_ -> metrics_, built by Metabase transforms
 ops.*          gx_results, pipeline_runs, mb_transform_runs
 ```
 
+A source is `sources/<name>.yml` — what the API is, how it pages, what is
+incremental, when it runs. `raw_pylon` is simply the first one.
+
 - `pylon` ingests. `dq` validates. `mbx` builds whatever the manifest declares.
   `mb` is the Metabase CLI, and owns everything about how Metabase is used.
-- Airflow runs all of it hourly; a pool of one serializes ingestion.
+- Airflow runs all of it hourly; each source has a pool of one, so its runs
+  cannot race that source's incremental cursor.
 - Anything long-running belongs in a DAG, not in your shell.
