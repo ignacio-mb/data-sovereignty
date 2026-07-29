@@ -16,10 +16,10 @@ import typing
 import pendulum
 import pytest
 
-from pylon_pipeline import runtime, spec
-from pylon_pipeline.ingest import hints as hardcoded_hints
-from pylon_pipeline.ingest import transform as hardcoded_transform
-from pylon_pipeline.ingest.settings import RATE_LIMITS, SOFT_DELETE_DIRECTORY_TABLES
+from ingest_runtime import runtime, spec
+from ingest_runtime.ingest import hints as hardcoded_hints
+from ingest_runtime.ingest import transform as hardcoded_transform
+from ingest_runtime.ingest.settings import RATE_LIMITS, SOFT_DELETE_DIRECTORY_TABLES
 
 
 @pytest.fixture

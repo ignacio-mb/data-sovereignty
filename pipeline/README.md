@@ -1,4 +1,4 @@
-# pylon-pipeline
+# ingest-runtime
 
 Pylon → Postgres ingestion, built on [dlt](https://dlthub.com) 1.x.
 

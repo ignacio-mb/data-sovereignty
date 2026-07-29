@@ -387,7 +387,7 @@ done
 
 if [[ "$REBUILT" == true ]]; then
   docker compose --profile cli run --rm airflow-cli bash -c \
-    'pylon --help >/dev/null && dq --help >/dev/null && mbx --help >/dev/null && mb --version >/dev/null' \
+    'ingest --help >/dev/null && dq --help >/dev/null && mbx --help >/dev/null && mb --version >/dev/null' \
     || fail "the CLIs do not resolve against the rebuilt image"
   SMOKE=clis
 fi

@@ -5,11 +5,11 @@ import pendulum
 import pytest
 from click.testing import CliRunner
 
-from pylon_pipeline.cli import cli
+from ingest_runtime.cli import cli
 from tests.conftest import DIRECTORY
 
 WINDOW_ARGS = [
-    "ingest", "--api-key", "test-key", "--destination", "duckdb",
+    "run", "--api-key", "test-key", "--destination", "duckdb",
     "--start", "2026-06-01", "--end", "2026-08-01",
 ]
 
@@ -28,7 +28,7 @@ def db():
 
 @pytest.fixture(autouse=True)
 def _no_sleep(monkeypatch):
-    monkeypatch.setattr("pylon_pipeline.ingest.pacing.time.sleep", lambda seconds: None)
+    monkeypatch.setattr("ingest_runtime.ingest.pacing.time.sleep", lambda seconds: None)
 
 
 def test_window_ingest_loads_all_tables(pylon_api, isolated_dlt):
@@ -72,7 +72,7 @@ def test_rerun_merges_instead_of_duplicating(pylon_api, isolated_dlt):
 
 
 def test_incremental_uses_and_advances_cursor(pylon_api, isolated_dlt):
-    run_cli(["ingest", "--api-key", "test-key", "--destination", "duckdb",
+    run_cli(["run", "--api-key", "test-key", "--destination", "duckdb",
              "--resources", "issues"])
 
     search_bodies = [r.json() for r in pylon_api.request_history if r.path == "/issues/search"]
@@ -85,7 +85,7 @@ def test_incremental_uses_and_advances_cursor(pylon_api, isolated_dlt):
         lo, hi = (pendulum.parse(v) for v in body["filter"]["values"])
         assert (hi - lo).in_days() <= 30
 
-    run_cli(["ingest", "--api-key", "test-key", "--destination", "duckdb",
+    run_cli(["run", "--api-key", "test-key", "--destination", "duckdb",
              "--resources", "issues"])
     search_bodies = [r.json() for r in pylon_api.request_history if r.path == "/issues/search"]
     # second run: single window from max updated_at seen (2026-07-04T10:00:00Z) minus 1h lookback
@@ -126,7 +126,7 @@ def test_incremental_run_never_soft_deletes_issues(pylon_api, isolated_dlt):
     run_cli(WINDOW_ARGS)
     # incremental only re-fetches recently-updated issues; --mark-deleted must
     # not tombstone the quiet ones
-    run_cli(["ingest", "--api-key", "test-key", "--destination", "duckdb", "--mark-deleted"])
+    run_cli(["run", "--api-key", "test-key", "--destination", "duckdb", "--mark-deleted"])
 
     with db() as con:
         flagged = con.sql("select count(*) from raw_pylon.issues where _deleted").fetchone()[0]
@@ -138,7 +138,7 @@ def test_full_history_window_soft_deletes_vanished_issues(pylon_api, isolated_dl
 
     # a full-history window (2019 -> now) is the reconcile that IS allowed to
     # tombstone issues absent from the fetch
-    full = ["ingest", "--api-key", "test-key", "--destination", "duckdb", "--start", "2019-01-01"]
+    full = ["run", "--api-key", "test-key", "--destination", "duckdb", "--start", "2019-01-01"]
     run_cli(full)
     monkeypatch.setattr(fixtures, "ISSUES", fixtures.ISSUES[:2])  # iss_3 vanishes
     run_cli(full + ["--mark-deleted"])
@@ -151,7 +151,7 @@ def test_full_history_window_soft_deletes_vanished_issues(pylon_api, isolated_dl
 
 def test_end_before_start_is_rejected(pylon_api, isolated_dlt):
     result = CliRunner().invoke(cli, [
-        "ingest", "--api-key", "test-key", "--destination", "duckdb",
+        "run", "--api-key", "test-key", "--destination", "duckdb",
         "--start", "2026-06-01", "--end", "2026-05-01",
     ])
     assert result.exit_code != 0
@@ -172,11 +172,11 @@ def test_mark_deleted_survives_empty_directory_table(pylon_api, isolated_dlt, mo
 def test_pending_package_recovery_does_not_skip_extract_or_tombstone(pylon_api, isolated_dlt):
     # Simulate a previous crash after normalize but before load: a pending
     # package sits in the duckdb pipeline's working dir.
-    from pylon_pipeline.ingest.client import PylonClient
-    from pylon_pipeline.ingest.pacing import EndpointPacer
-    from pylon_pipeline.ingest.settings import RATE_LIMITS
-    from pylon_pipeline.ingest.source import pylon_source
-    from pylon_pipeline.warehouse import build_pipeline
+    from ingest_runtime.ingest.client import PylonClient
+    from ingest_runtime.ingest.pacing import EndpointPacer
+    from ingest_runtime.ingest.settings import RATE_LIMITS
+    from ingest_runtime.ingest.source import pylon_source
+    from ingest_runtime.warehouse import build_pipeline
 
     client = PylonClient("test-key", pacer=EndpointPacer(RATE_LIMITS, sleeper=lambda s: None))
     crashed = build_pipeline(destination="duckdb", dataset_name="raw_pylon")

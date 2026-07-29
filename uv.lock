@@ -17,8 +17,8 @@ resolution-markers = [
 members = [
     "data-sovereignty",
     "mb-tools",
-    "pylon-pipeline",
-    "pylon-quality",
+    "ingest-runtime",
+    "quality-runtime",
 ]
 
 [[package]]
@@ -1045,8 +1045,8 @@ version = "0.1.0"
 source = { virtual = "." }
 dependencies = [
     { name = "mb-tools" },
-    { name = "pylon-pipeline" },
-    { name = "pylon-quality" },
+    { name = "ingest-runtime" },
+    { name = "quality-runtime" },
 ]
 
 [package.dev-dependencies]
@@ -1063,8 +1063,8 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "mb-tools", editable = "metabase" },
-    { name = "pylon-pipeline", editable = "pipeline" },
-    { name = "pylon-quality", editable = "quality" },
+    { name = "ingest-runtime", editable = "pipeline" },
+    { name = "quality-runtime", editable = "quality" },
 ]
 
 [package.metadata.requires-dev]
@@ -3082,7 +3082,7 @@ crypto = [
 ]
 
 [[package]]
-name = "pylon-pipeline"
+name = "ingest-runtime"
 version = "0.1.0"
 source = { editable = "pipeline" }
 dependencies = [
@@ -3121,7 +3121,7 @@ dev = [
 ]
 
 [[package]]
-name = "pylon-quality"
+name = "quality-runtime"
 version = "0.1.0"
 source = { editable = "quality" }
 dependencies = [

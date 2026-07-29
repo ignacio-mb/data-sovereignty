@@ -1,4 +1,4 @@
-"""CLI: `pylon ingest` — Pylon API -> Postgres (dlt)."""
+"""CLI: `ingest run <source>` — a source spec to the warehouse, via dlt."""
 
 import json
 import logging
@@ -38,13 +38,13 @@ RUNTIME_DEFAULTS = {
 
 @click.group()
 def cli():
-    """Pylon pipeline: `ingest` (Pylon -> Postgres)."""
+    """Ingestion runtime: `run` loads a source into the warehouse."""
     load_dotenv()
     for key, value in RUNTIME_DEFAULTS.items():
         os.environ.setdefault(key, value)
 
 
-@cli.command()
+@cli.command("run")
 @click.option("--api-key", envvar="PYLON_API_KEY", required=True,
               help="Pylon API key (env: PYLON_API_KEY).")
 @click.option("--start", type=click.DateTime(formats=["%Y-%m-%d", "%Y-%m-%dT%H:%M:%S"]), default=None,
@@ -70,7 +70,7 @@ def cli():
 @click.option("--verbose", is_flag=True, help="Debug logging (per-message-fetch detail).")
 def ingest(api_key, start, end, resources_csv, mode, mark_deleted_flag, sample_n,
            budget_minutes, destination, summary_json, verbose):
-    """Ingest Pylon data into the warehouse (schema raw_pylon)."""
+    """Ingest a source into the warehouse (database raw_<source>)."""
     from .ingest.client import PylonClient
     from .ingest.soft_delete import mark_deleted
     from .ingest.source import ALL_RESOURCES, pylon_source

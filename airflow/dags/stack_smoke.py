@@ -32,7 +32,7 @@ with DAG(
         task_id="cli_tools",
         bash_command=(
             "set -euo pipefail\n"
-            "pylon --help > /dev/null && echo 'pylon ok'\n"
+            "ingest --help > /dev/null && echo 'ingest ok'\n"
             "dq --help    > /dev/null && echo 'dq ok'\n"
             "mbx --help   > /dev/null && echo 'mbx ok'\n"
             "mb --version                && echo 'mb ok'\n"
