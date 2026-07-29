@@ -12,15 +12,35 @@
 # NAT. It gives shells but no general egress, so the pipeline cannot reach the
 # Pylon API. It does not fit this stack.
 
+# Either shape works. On a shared account that denies ec2:CreateVpc — a common
+# guardrail — set existing_subnet_id and everything below except the security
+# group is skipped. The inbound posture is identical: the security group is
+# created either way, and it has no ingress rules either way.
+
 data "aws_availability_zones" "available" {
   state = "available"
 }
 
+data "aws_subnet" "existing" {
+  count = var.existing_subnet_id != "" ? 1 : 0
+  id    = var.existing_subnet_id
+}
+
 locals {
-  az = var.availability_zone != "" ? var.availability_zone : data.aws_availability_zones.available.names[0]
+  create_network = var.existing_subnet_id == ""
+
+  # The AZ and the VPC follow the subnet when one is given: the data volume is
+  # AZ-bound and has to land where the instance does.
+  az = local.create_network ? (
+    var.availability_zone != "" ? var.availability_zone : data.aws_availability_zones.available.names[0]
+  ) : data.aws_subnet.existing[0].availability_zone
+
+  vpc_id    = local.create_network ? aws_vpc.main[0].id : data.aws_subnet.existing[0].vpc_id
+  subnet_id = local.create_network ? aws_subnet.main[0].id : var.existing_subnet_id
 }
 
 resource "aws_vpc" "main" {
+  count                = local.create_network ? 1 : 0
   cidr_block           = var.vpc_cidr
   enable_dns_support   = true
   enable_dns_hostnames = true
@@ -29,13 +49,15 @@ resource "aws_vpc" "main" {
 }
 
 resource "aws_internet_gateway" "main" {
-  vpc_id = aws_vpc.main.id
+  count  = local.create_network ? 1 : 0
+  vpc_id = aws_vpc.main[0].id
 
   tags = { Name = var.project }
 }
 
 resource "aws_subnet" "main" {
-  vpc_id = aws_vpc.main.id
+  count  = local.create_network ? 1 : 0
+  vpc_id = aws_vpc.main[0].id
   # Half the VPC, not all of it: taking the whole range would mean recreating
   # the VPC to add a second subnet later.
   cidr_block              = cidrsubnet(var.vpc_cidr, 1, 0)
@@ -46,25 +68,27 @@ resource "aws_subnet" "main" {
 }
 
 resource "aws_route_table" "main" {
-  vpc_id = aws_vpc.main.id
+  count  = local.create_network ? 1 : 0
+  vpc_id = aws_vpc.main[0].id
 
   route {
     cidr_block = "0.0.0.0/0"
-    gateway_id = aws_internet_gateway.main.id
+    gateway_id = aws_internet_gateway.main[0].id
   }
 
   tags = { Name = var.project }
 }
 
 resource "aws_route_table_association" "main" {
-  subnet_id      = aws_subnet.main.id
-  route_table_id = aws_route_table.main.id
+  count          = local.create_network ? 1 : 0
+  subnet_id      = aws_subnet.main[0].id
+  route_table_id = aws_route_table.main[0].id
 }
 
 resource "aws_security_group" "instance" {
   name        = "${var.project}-instance"
   description = "Egress only. No ingress rules — access is through SSM."
-  vpc_id      = aws_vpc.main.id
+  vpc_id      = local.vpc_id
 
   tags = { Name = var.project }
 }

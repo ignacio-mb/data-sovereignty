@@ -22,9 +22,37 @@ variable "project" {
 }
 
 variable "vpc_cidr" {
-  description = "CIDR for the dedicated VPC. Nothing else lives in it."
+  description = "CIDR for the dedicated VPC. Only used when creating one."
   type        = string
   default     = "10.20.0.0/24"
+}
+
+variable "existing_subnet_id" {
+  description = <<-EOT
+    Deploy into a subnet that already exists instead of building a VPC.
+
+    Set this when the account forbids ec2:CreateVpc, which is a common
+    guardrail on a shared account. The security group is still created and
+    still has no ingress rules; the AZ and the VPC are taken from the subnet,
+    so `availability_zone` is ignored.
+
+    The subnet must be able to reach the internet — an internet gateway route
+    with a public IP, or a NAT gateway. The instance pulls container images and
+    calls the Pylon API; without egress the stack cannot work.
+  EOT
+  type        = string
+  default     = ""
+}
+
+variable "associate_public_ip" {
+  description = <<-EOT
+    Give the instance a public address. Required in a public subnet whose route
+    to the world is an internet gateway; leave false in a private subnet behind
+    a NAT gateway. Inbound is closed either way — the security group has no
+    ingress rules.
+  EOT
+  type        = bool
+  default     = true
 }
 
 # ─── Instance ────────────────────────────────────────────────────────────────
