@@ -27,12 +27,26 @@ CREATE TABLE IF NOT EXISTS {OPS_SCHEMA}.gx_results (
     expectation     text        NOT NULL,
     column_name     text,
     success         boolean     NOT NULL,
+    -- 'error' fails the checkpoint; 'warn' is recorded and reported but does
+    -- not. Freshness is the motivating case: on a quiet tenant "no new tickets
+    -- for a day" is a fact about the business, not a broken pipeline, and a
+    -- check that reddens every run teaches you to ignore red runs.
+    severity        text        NOT NULL DEFAULT 'error',
+    -- The human sentence the suite author wrote. Without it a failure reads
+    -- "unexpected_rows_expectation observed=1", which identifies nothing.
+    description     text,
     observed_value  text,
     details         jsonb,
     dag_id          text,
     dag_run_id      text,
     task_id         text
 );
+
+-- Added after the table shipped; both are no-ops on a fresh install.
+ALTER TABLE {OPS_SCHEMA}.gx_results
+    ADD COLUMN IF NOT EXISTS severity text NOT NULL DEFAULT 'error';
+ALTER TABLE {OPS_SCHEMA}.gx_results
+    ADD COLUMN IF NOT EXISTS description text;
 CREATE INDEX IF NOT EXISTS gx_results_validated_at_idx
     ON {OPS_SCHEMA}.gx_results (validated_at DESC);
 CREATE INDEX IF NOT EXISTS gx_results_failures_idx

@@ -39,12 +39,27 @@ def _identity(table):
 
 
 def _freshness(table, column):
+    """Advisory, not a gate.
+
+    This measures how long ago the TENANT last touched a ticket, which is only a
+    proxy for "is ingestion working" while the tenant is busy. On a quiet
+    weekend it fails while every part of the pipeline is healthy, and a check
+    that reddens the DAG for a non-problem trains you to stop reading red DAGs.
+
+    Whether ingestion actually ran is a question about runs, not rows, and
+    ops.pipeline_runs answers it — so this stays recorded and reported, but does
+    not fail the checkpoint.
+    """
     hours = freshness_hours()
     return gxe.UnexpectedRowsExpectation(
         unexpected_rows_query=(
             f"SELECT 1 FROM {{batch}} HAVING max({column}) < now() - interval '{hours} hours'"
         ),
-        description=f"{table}.{column} is within the last {hours}h",
+        description=(
+            f"{table}.{column} is within the last {hours}h "
+            f"(advisory: a quiet tenant looks the same as a stalled pipeline here)"
+        ),
+        meta={"severity": "warn"},
     )
 
 

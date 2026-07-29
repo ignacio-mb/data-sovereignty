@@ -127,7 +127,11 @@ def run(checkpoint, fail_on_error):
 
     _report(checkpoint, rows)
 
-    if not result.success and fail_on_error:
+    # GX's own result.success counts every failure equally. The verdict that
+    # reaches Airflow must ignore advisory ones, or marking a check advisory
+    # would change the report and nothing else.
+    fatal = [row for row in rows if not row["success"] and row.get("severity", "error") == "error"]
+    if fatal and fail_on_error:
         sys.exit(1)
 
 
@@ -166,8 +170,18 @@ def _report(checkpoint, rows):
     click.echo(f"\n{checkpoint}: {len(rows) - len(failures)}/{len(rows)} expectations passed")
     if not failures:
         return
-    click.echo("\nfailed:")
-    for row in failures:
+
+    def line(row):
+        # Lead with the author's sentence. "unexpected_rows_expectation
+        # observed=1" names the machinery, not the problem.
         column = f" [{row['column_name']}]" if row["column_name"] else ""
         observed = f" observed={row['observed_value']}" if row["observed_value"] else ""
-        click.echo(f"  {row['asset']}{column} {row['expectation']}{observed}")
+        what = row.get("description") or row["expectation"]
+        return f"  {row['asset']}{column}: {what}{observed}"
+
+    for label, severity in (("failed", "error"), ("warnings (not fatal)", "warn")):
+        subset = [row for row in failures if row.get("severity", "error") == severity]
+        if subset:
+            click.echo(f"\n{label}:")
+            for row in subset:
+                click.echo(line(row))

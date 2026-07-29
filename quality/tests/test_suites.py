@@ -47,7 +47,25 @@ class TestRawSuites:
         monkeypatch.setenv("GX_FRESHNESS_HOURS", "6")
         suite = raw_pylon.build()[(config.RAW_SCHEMA, "issues")]
         freshness = [text for text in descriptions(suite) if "within the last" in text]
-        assert freshness == ["issues.updated_at is within the last 6h"]
+        assert len(freshness) == 1
+        assert freshness[0].startswith("issues.updated_at is within the last 6h")
+
+    def test_freshness_is_advisory_and_everything_else_is_not(self):
+        """A quiet tenant must not redden the DAG, but nothing else may opt out.
+
+        Freshness measures tenant activity, not pipeline health, so it warns.
+        Making it advisory is only safe if advisory stays the exception.
+        """
+        advisory, gating = [], []
+        for suite in raw_pylon.build().values():
+            for expectation in suite:
+                meta = expectation.meta or {}
+                target = advisory if meta.get("severity") == "warn" else gating
+                target.append(expectation.description or expectation.expectation_type)
+
+        assert advisory, "freshness should be marked advisory"
+        assert all("within the last" in text for text in advisory), advisory
+        assert not any("within the last" in text for text in gating)
 
     def test_children_are_checked_against_their_parents(self):
         suites = raw_pylon.build()

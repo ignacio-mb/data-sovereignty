@@ -12,10 +12,11 @@ log = logging.getLogger(__name__)
 
 INSERT = f"""
 INSERT INTO {OPS_SCHEMA}.gx_results
-    (checkpoint, suite, asset, expectation, column_name, success,
-     observed_value, details, dag_id, dag_run_id, task_id)
+    (checkpoint, suite, asset, expectation, column_name, success, severity,
+     description, observed_value, details, dag_id, dag_run_id, task_id)
 VALUES (%(checkpoint)s, %(suite)s, %(asset)s, %(expectation)s, %(column_name)s,
-        %(success)s, %(observed_value)s, %(details)s, %(dag_id)s, %(dag_run_id)s, %(task_id)s)
+        %(success)s, %(severity)s, %(description)s, %(observed_value)s, %(details)s,
+        %(dag_id)s, %(dag_run_id)s, %(task_id)s)
 """
 
 
@@ -73,6 +74,7 @@ def flatten(checkpoint_name, checkpoint_result):
             config = result.expectation_config
             kwargs = dict(config.kwargs or {})
             exception = _exception_summary(result)
+            meta = dict(getattr(config, "meta", None) or {})
             rows.append({
                 "checkpoint": checkpoint_name,
                 "suite": suite,
@@ -80,6 +82,11 @@ def flatten(checkpoint_name, checkpoint_result):
                 "expectation": config.type,
                 "column_name": kwargs.get("column"),
                 "success": bool(result.success),
+                # Anything not explicitly marked advisory fails the checkpoint:
+                # a suite author has to opt in to being ignorable.
+                "severity": "warn" if meta.get("severity") == "warn" else "error",
+                # config.description, not kwargs — GX keeps it off kwargs.
+                "description": getattr(config, "description", None),
                 # An expectation that raised has no observed value; surfacing the
                 # error here means `select observed_value ... where not success`
                 # answers "what went wrong" for both kinds of failure.
