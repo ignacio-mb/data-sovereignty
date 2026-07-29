@@ -106,10 +106,10 @@ In order. Each step is cheap and rules out a different failure.
 ```bash
 # 1. Fetch shape and transform, against duckdb — never touches production state
 docker compose --profile cli run --rm airflow-cli \
-  ingest --destination duckdb --sample 3
+  ingest run --destination duckdb --sample 3
 
 # 2. A bounded real load
-docker compose --profile cli run --rm airflow-cli ingest --destination clickhouse
+docker compose --profile cli run --rm airflow-cli ingest run --destination clickhouse
 
 # 3. The quality gate
 docker compose --profile cli run --rm airflow-cli dq run --checkpoint raw_<name>

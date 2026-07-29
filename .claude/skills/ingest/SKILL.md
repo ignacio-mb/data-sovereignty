@@ -14,7 +14,7 @@ make backfill START=2026-01-01       # a window; END defaults to now
 make backfill START=2026-01-01 END=2026-04-01
 ```
 
-Both trigger a DAG. **Do not run `pylon ingest --destination clickhouse` by hand
+Both trigger a DAG. **Do not run `ingest run --destination clickhouse` by hand
 while the stack is up.** Airflow serializes ingestion through a pool of one; an
 out-of-band run shares the same dlt working directory and incremental cursor and
 will interleave with a scheduled run into an inconsistent state.
@@ -24,7 +24,7 @@ name and cannot touch production state:
 
 ```bash
 docker compose --profile cli run --rm airflow-cli \
-  pylon ingest --destination duckdb --sample 3
+  ingest run --destination duckdb --sample 3
 ```
 
 ## Which mode does the user actually want

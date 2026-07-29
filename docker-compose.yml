@@ -149,6 +149,11 @@ services:
       # Read on every start, unlike the init SQL. Keeps ClickHouse inside the
       # container's memory limit instead of being OOM-killed by it.
       - ./warehouse/config/low-memory.xml:/etc/clickhouse-server/config.d/low-memory.xml:ro
+      # Bind IPv4. Without it, a host with no IPv6 leaves the server listening
+      # on nothing and failing its healthcheck forever. Mounted file by file,
+      # not as a directory: config.d already holds the image's own
+      # docker_related_config.xml, and a directory mount would hide it.
+      - ./warehouse/config/zz-listen.xml:/etc/clickhouse-server/config.d/zz-listen.xml:ro
 
   # Metabase's own application database. Never share this between instances.
   metabase-app-db:
