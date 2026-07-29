@@ -41,6 +41,15 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Only from the deployed branch
+        # The environment's branch policy is the real control; this is the
+        # version that fails immediately and says why, rather than after an
+        # OIDC exchange.
+        if: github.ref != 'refs/heads/main'
+        run: |
+          echo "::error::redeploy runs from main only; this dispatch used ${{ github.ref }}"
+          exit 1
+
       - name: Validate the input
         env:
           # Through the environment, never interpolated into the script: an

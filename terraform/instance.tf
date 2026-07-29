@@ -64,7 +64,10 @@ resource "aws_instance" "main" {
     tailscale       = var.enable_tailscale
     tailscale_param = var.tailscale_authkey_parameter
     cw_agent        = var.enable_cloudwatch_agent
-    cw_config_param = local.cw_agent_parameter_name
+    # The resource, not the local that names it: referencing the string leaves
+    # no edge in the graph, and the instance could then boot and fetch a
+    # parameter Terraform has not written yet.
+    cw_config_param = var.enable_cloudwatch_agent ? aws_ssm_parameter.cw_agent_config[0].name : ""
   })
 
   # Editing user_data does not re-run cloud-init on a live instance and must
@@ -73,6 +76,18 @@ resource "aws_instance" "main" {
   user_data_replace_on_change = false
 
   tags = { Name = var.project }
+
+  # The instance references the profile and the security group, so those edges
+  # exist — but not the policies inside the role, nor the route to the
+  # internet. Without these, it can boot with an empty role or no egress, and
+  # user-data fails on its first apt-get or its first aws call.
+  depends_on = [
+    aws_iam_role_policy.instance,
+    aws_iam_role_policy_attachment.ssm_core,
+    aws_iam_role_policy_attachment.cloudwatch_agent,
+    aws_vpc_security_group_egress_rule.all,
+    aws_route_table_association.main,
+  ]
 
   lifecycle {
     ignore_changes = [ami]

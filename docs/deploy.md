@@ -34,6 +34,55 @@ resets it to `origin/main`. Anything uncommitted there is saved to
 `/data/deploy/dirty-<sha>.patch` and then overwritten. Edit on a laptop, open a
 PR, merge.
 
+## Before the first apply
+
+**Merge this work to `main` first.** The host bootstrap clones `main` and
+installs `scripts/ds-deploy.sh` and `scripts/systemd/*` out of the checkout. If
+they are not on `main` yet, cloud-init aborts part-way and you get a host with
+no SSH key, no systemd units and no CloudWatch agent — while Terraform reports
+success.
+
+Deploying from a feature branch instead does not help: `ds-deploy` refuses to
+run when the checkout is on any branch other than the one it deploys.
+
+Expect the merge itself to show one failed `Deploy to AWS` check, because the
+repository secrets below do not exist yet. That is the correct order — there is
+nothing to deploy to until `terraform apply` has run.
+
+## Straight after apply
+
+1. **Confirm the alarm email.** SNS sends a subscription link to the address in
+   `terraform.tfvars`; until it is clicked, every alarm fires into a topic with
+   no subscriber, and the link expires in two days.
+
+   ```bash
+   aws sns list-subscriptions-by-topic --topic-arn "$(cd terraform && terraform output -raw alarm_topic_arn)"
+   ```
+
+   A `PendingConfirmation` ARN means it has not been clicked. If the link has
+   expired: `terraform apply -replace='aws_sns_topic_subscription.email[0]'`.
+
+2. **Read the boot log.** Terraform cannot see a cloud-init that failed.
+
+   ```bash
+   aws ssm start-session --target "$(cd terraform && terraform output -raw instance_id)"
+   ```
+
+   Then `sudo tail -40 /var/log/cloud-init-output.log`. The last line must be
+   `host preparation complete`. If it is not, fix the cause and re-run the
+   script — it is idempotent, and it fast-forwards the checkout on a re-run:
+
+   ```bash
+   aws ssm send-command --document-name AWS-RunShellScript --instance-ids "$(cd terraform && terraform output -raw instance_id)" --parameters 'commands=["bash /var/lib/cloud/instance/user-data.txt"]'
+   ```
+
+3. **Check the metrics are arriving**, since the two alarms now treat silence
+   as a problem and will email you if they are not:
+
+   ```bash
+   aws cloudwatch list-metrics --namespace CWAgent --metric-name disk_used_percent
+   ```
+
 ## First deploy
 
 Assumes `terraform apply` has run and `terraform output instance_id` works.
@@ -95,10 +144,25 @@ Three things in GitHub, by hand:
   `AWS_REGION`, `DEPLOY_INSTANCE_ID`. Secrets rather than variables: none of it
   is sensitive, but this repository is public and a workflow log would
   otherwise publish the account and instance ids.
-- **An environment named `production`**, with its deployment branch restricted
-  to `main`. The deploy role's trust policy matches on
-  `repo:ignacio-mb/data-sovereignty:environment:production`, so this is what
-  scopes deploys to this branch — not an approval gate.
+- **An environment named `production`, created deliberately, with its
+  deployment branch restricted to `main`.** The deploy role's trust policy
+  matches on `repo:ignacio-mb/data-sovereignty:environment:production`, and the
+  subject carries no branch — so the environment's branch policy is what scopes
+  deploys, not an approval gate. This matters because a workflow referencing an
+  environment that does not exist gets one **auto-created with no protection
+  rules at all**. Create it before the first merge.
+
+  The nested policy object needs a JSON body; the `-f 'a[b]=true'` form will
+  not build it:
+
+  ```bash
+  gh api -X PUT repos/ignacio-mb/data-sovereignty/environments/production --input - <<< '{"deployment_branch_policy":{"protected_branches":true,"custom_branch_policies":false}}'
+  ```
+
+- **Add the three secrets only after the first manual deploy has rendered
+  `.env`.** Setting them earlier lets a merge record a desired commit for a
+  host with no `.env`; the converge timer then fails three times in ten minutes
+  and writes `/data/deploy/HOLD`, freezing deploys until someone finds it.
 - **Branch protection on `main`**: require a pull request, require the `Lint
   and unit tests` and `DAG integrity` checks, require signed commits, and block
   force pushes. Force pushes matter more than usual here: the deploy decides

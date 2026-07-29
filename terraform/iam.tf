@@ -35,9 +35,16 @@ data "aws_iam_policy_document" "instance" {
   # Reading the stack's secrets to render .env, and the desired deploy SHA the
   # converge timer applies. Read-only, and scoped to this stack's path.
   statement {
-    sid       = "ReadStackParameters"
-    actions   = ["ssm:GetParameter", "ssm:GetParameters", "ssm:GetParametersByPath"]
-    resources = ["arn:aws:ssm:${var.region}:${data.aws_caller_identity.current.account_id}:parameter${var.ssm_parameter_prefix}/*"]
+    sid     = "ReadStackParameters"
+    actions = ["ssm:GetParameter", "ssm:GetParameters", "ssm:GetParametersByPath"]
+    resources = [
+      # GetParametersByPath authorizes against the *path being requested*, not
+      # the parameters under it, and `prod/*` requires a literal slash after
+      # `prod` — so the bare path has to be listed too, or the sweep in
+      # render_env_from_ssm.sh is denied and reports "no parameters found".
+      "arn:aws:ssm:${var.region}:${data.aws_caller_identity.current.account_id}:parameter${var.ssm_parameter_prefix}",
+      "arn:aws:ssm:${var.region}:${data.aws_caller_identity.current.account_id}:parameter${var.ssm_parameter_prefix}/*",
+    ]
   }
 
   # The agent's config deliberately lives OUTSIDE the secrets prefix, so it
