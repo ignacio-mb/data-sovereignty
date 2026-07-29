@@ -203,26 +203,48 @@ echo "==> Connecting the warehouse"
 # --full is load-bearing. mb's default list projection is compact and omits
 # `details` entirely, so the match silently never fires and every run adds
 # another duplicate connection.
-DB_ID="$(mb db list --full --json --max-bytes 0 \
-  | jq -r --arg host "$WAREHOUSE_HOST" --arg db "$WAREHOUSE_DB" \
-    "${UNWRAP} | select(.details.host == \$host and .details.dbname == \$db) | .id" \
+DB_LIST="$(mb db list --full --json --max-bytes 0)"
+MATCH='select(.details.host == $host and .details.dbname == $db)'
+
+DB_ID="$(jq -r --arg host "$WAREHOUSE_HOST" --arg db "$WAREHOUSE_DB" \
+  "${UNWRAP} | ${MATCH} | select(.engine == \"clickhouse\") | .id" <<<"$DB_LIST" \
   | sort -n | head -n1)"
+
+# A connection at the same host and database but a different engine is the
+# Postgres warehouse from before the ClickHouse migration. Matching on physical
+# identity alone finds it, reports "already connected", and then every query
+# against it fails — the sync returns 422. Retire it rather than leaving two
+# connections named Warehouse, only one of which works.
+STALE_ID="$(jq -r --arg host "$WAREHOUSE_HOST" --arg db "$WAREHOUSE_DB" \
+  "${UNWRAP} | ${MATCH} | select(.engine != \"clickhouse\") | .id" <<<"$DB_LIST" \
+  | sort -n | head -n1)"
+if [[ -n "$STALE_ID" ]]; then
+  note "removing the pre-migration ${WAREHOUSE_HOST} connection (id ${STALE_ID}, engine was not clickhouse)"
+  # curl: `mb db` has no delete verb.
+  curl -fsS -H "x-api-key: ${MB_API_KEY}" -X DELETE "${MB_URL}/api/database/${STALE_ID}" >/dev/null || true
+fi
 
 if [[ -n "$DB_ID" ]]; then
   note "already connected (id ${DB_ID})"
 else
   # curl: `mb db` has list/get/schemas/sync-schema/rescan-values but no create.
   # The ClickHouse driver is bundled in Metabase Enterprise v1.63 — no plugin
-  # jar and no /plugins mount. `scan-all-databases` is the important field: our
-  # three logical layers are three ClickHouse DATABASES, and without it Metabase
-  # only ever sees the one named in `dbname`.
+  # jar and no /plugins mount.
+  #
+  # `enable-multiple-db` is the field that matters here, and the field names are
+  # taken from the running instance rather than guessed:
+  #   curl -s $MB_URL/api/session/properties | jq '.engines.clickhouse'
+  # Our three logical layers are three ClickHouse DATABASES, and without it a
+  # connection only ever sees the one named in `dbname`. `db-filters-type: all`
+  # then stops it filtering any of them back out.
   DB_BODY="$(jq -n \
     --arg name "$WAREHOUSE_MB_NAME" --arg host "$WAREHOUSE_HOST" \
     --argjson port "$WAREHOUSE_HTTP_PORT" --arg dbname "$WAREHOUSE_DB" \
     --arg user "$WAREHOUSE_USER" --arg password "$WAREHOUSE_PASSWORD" \
     '{name: $name, engine: "clickhouse",
       details: {host: $host, port: $port, dbname: $dbname, user: $user,
-                password: $password, "scan-all-databases": true,
+                password: $password, "enable-multiple-db": true,
+                "db-filters-type": "all",
                 ssl: false, "tunnel-enabled": false}}')"
   DB_ID="$(curl -fsS -H "x-api-key: ${MB_API_KEY}" -X POST "${MB_URL}/api/database" \
     -H 'Content-Type: application/json' -d "$DB_BODY" | jq -r '.id // empty')"

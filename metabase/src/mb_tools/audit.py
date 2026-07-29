@@ -84,14 +84,22 @@ def find_database(name=None):
 
 def ensure_transforms_collection():
     """Transforms only accept collections in the :transforms namespace; a normal
-    analytics collection id is rejected outright."""
-    existing = mb.items(mb.run(["collection", "list", "--namespace", "transforms"]))
+    analytics collection id is rejected outright.
+
+    `mb collection list` takes no --namespace flag (its only filter preset is
+    all|archived|personal), so the namespace is read off each row instead —
+    which requires --full, since the compact projection drops it. `collection
+    create` does take a namespace, but in the request body rather than as a flag.
+    """
+    existing = mb.items(mb.run(["collection", "list"], full=True))
     for collection in existing:
-        if collection.get("name") == TRANSFORMS_COLLECTION:
+        if (collection.get("namespace") == "transforms"
+                and collection.get("name") == TRANSFORMS_COLLECTION):
             return collection
     created = mb.run(
-        ["collection", "create", "--namespace", "transforms"],
+        ["collection", "create"],
         body={"name": TRANSFORMS_COLLECTION,
+              "namespace": "transforms",
               "description": "Transforms built from metabase/transforms/manifest.yml."},
     )
     log.info("created transforms collection %r (id %s)", TRANSFORMS_COLLECTION, created.get("id"))
