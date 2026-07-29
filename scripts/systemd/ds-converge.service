@@ -1,0 +1,15 @@
+[Unit]
+Description=Converge the stack onto the commit that should be live
+Requires=docker.service
+After=docker.service data-sovereignty.service
+RequiresMountsFor=/data
+
+[Service]
+Type=oneshot
+# Runs as root: it calls ds-deploy, which is what drops to the tree owner once
+# it has checked the commit is an ancestor of the deployed branch.
+ExecStart=/usr/local/bin/ds-converge
+# Declining to deploy — work in flight, a lock held, a hold file — is a normal
+# outcome, not a failure to alert on.
+SuccessExitStatus=75 76 79
+TimeoutStartSec=5400

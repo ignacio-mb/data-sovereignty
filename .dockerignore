@@ -1,0 +1,35 @@
+# The build context is the repository root, and `make build` on a host sends
+# all of it to the daemon. Without this, that includes .env — every secret the
+# stack has — and however many gigabytes of Airflow task logs have accumulated.
+#
+# A deploy's build does not have this problem, because it builds from a fresh
+# git worktree where none of these exist. That difference is precisely why the
+# gap is easy to miss.
+
+.env
+.env.*
+!.env.example
+
+.git/
+.github/
+terraform/
+docs/
+
+# Runtime state, rebuildable
+airflow/logs/
+quality/gx_output/
+metabase/.state/
+.scratch/
+
+# Local development
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+*.egg-info/
+node_modules/
+*.duckdb
+*.duckdb.wal
+
+.DS_Store

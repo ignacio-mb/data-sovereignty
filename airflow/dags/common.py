@@ -24,7 +24,14 @@ NOTHING_TO_BUILD_EXIT = 99
 
 # Written by the ingest task, read by the ops task. Per-run so a backfill and an
 # hourly run can never read each other's summary.
-SUMMARY_PATH = "/tmp/pylon-summary-{{ run_id | replace('/', '_') | replace(':', '-') }}.json"
+#
+# On the dlt-state volume, not /tmp: /tmp is the container's own writable layer, so
+# a recreate between ingest and record_ops loses the summary and the
+# ops.pipeline_runs row with it, while the DAG still reports success.
+SUMMARY_PATH = (
+    "/opt/dlt-state/run-summaries/"
+    "pylon-summary-{{ run_id | replace('/', '_') | replace(':', '-') }}.json"
+)
 
 DEFAULT_ARGS = {
     "retries": 1,

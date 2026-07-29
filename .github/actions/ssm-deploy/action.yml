@@ -1,0 +1,174 @@
+name: Deploy over SSM
+description: >-
+  Record the commit that should be live, ask SSM to deploy it on the instance,
+  and report what happened.
+
+# Deliberately no `uses:` anywhere in here. This is the one place that holds an
+# AWS credential, and on a public repository the smallest supply chain is the
+# point: the OIDC token is exchanged for the role directly, so no third-party
+# action ever sees it. The AWS CLI and jq are both preinstalled on the runners.
+
+inputs:
+  role-arn:
+    description: Role to assume through GitHub OIDC.
+    required: true
+  region:
+    description: AWS region.
+    required: true
+  instance-id:
+    description: Instance to deploy to.
+    required: true
+  sha:
+    description: Full 40-character commit sha.
+    required: true
+  document-name:
+    description: SSM document that runs the deploy.
+    required: false
+    default: data-sovereignty-deploy
+  parameter-name:
+    description: Parameter holding the commit that should be live.
+    required: false
+    default: /data-sovereignty/prod/deploy/desired_sha
+  allow-in-flight:
+    description: Deploy even while a DAG run is in flight.
+    required: false
+    default: "false"
+  force-rebuild:
+    description: Rebuild the image regardless of which paths changed.
+    required: false
+    default: "false"
+
+runs:
+  using: composite
+  steps:
+    - name: Assume the deploy role
+      shell: bash
+      env:
+        ROLE_ARN: ${{ inputs.role-arn }}
+        AWS_REGION: ${{ inputs.region }}
+      run: |
+        set -euo pipefail
+        token="$(curl -sSf \
+          -H "Authorization: bearer ${ACTIONS_ID_TOKEN_REQUEST_TOKEN}" \
+          "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=sts.amazonaws.com" | jq -r '.value')"
+
+        creds="$(aws sts assume-role-with-web-identity \
+          --role-arn "$ROLE_ARN" \
+          --role-session-name "deploy-${GITHUB_RUN_ID}" \
+          --web-identity-token "$token" \
+          --duration-seconds 3600 \
+          --query Credentials --output json)"
+
+        for key in AccessKeyId SecretAccessKey SessionToken; do
+          value="$(jq -r ".${key}" <<<"$creds")"
+          echo "::add-mask::${value}"
+        done
+
+        {
+          echo "AWS_ACCESS_KEY_ID=$(jq -r .AccessKeyId <<<"$creds")"
+          echo "AWS_SECRET_ACCESS_KEY=$(jq -r .SecretAccessKey <<<"$creds")"
+          echo "AWS_SESSION_TOKEN=$(jq -r .SessionToken <<<"$creds")"
+          echo "AWS_REGION=${AWS_REGION}"
+          echo "AWS_DEFAULT_REGION=${AWS_REGION}"
+        } >>"$GITHUB_ENV"
+
+    - name: Record the commit that should be live
+      shell: bash
+      env:
+        SHA: ${{ inputs.sha }}
+        PARAMETER_NAME: ${{ inputs.parameter-name }}
+      run: |
+        set -euo pipefail
+        # Written before the command is sent, so a deploy that cannot be
+        # delivered right now is not lost: the converge timer on the instance
+        # reads this and catches up.
+        aws ssm put-parameter --name "$PARAMETER_NAME" --type String \
+          --value "$SHA" --overwrite >/dev/null
+        echo "recorded ${SHA}"
+
+    - name: Deploy
+      shell: bash
+      env:
+        SHA: ${{ inputs.sha }}
+        INSTANCE_ID: ${{ inputs.instance-id }}
+        DOCUMENT_NAME: ${{ inputs.document-name }}
+        ALLOW_IN_FLIGHT: ${{ inputs.allow-in-flight }}
+        FORCE_REBUILD: ${{ inputs.force-rebuild }}
+      run: |
+        set -euo pipefail
+
+        online="$(aws ssm describe-instance-information \
+          --filters "Key=InstanceIds,Values=${INSTANCE_ID}" \
+          --query 'InstanceInformationList[0].PingStatus' --output text 2>/dev/null || echo None)"
+        if [[ "$online" != "Online" ]]; then
+          # Not a failure: the commit is recorded, and applying it when the
+          # instance comes back is exactly what the converge timer is for.
+          echo "::warning::instance is ${online}; the commit is recorded and the converge timer will apply it"
+          exit 0
+        fi
+
+        command_id="$(aws ssm send-command \
+          --document-name "$DOCUMENT_NAME" \
+          --instance-ids "$INSTANCE_ID" \
+          --parameters "Sha=${SHA},AllowInFlight=${ALLOW_IN_FLIGHT},ForceRebuild=${FORCE_REBUILD}" \
+          --query 'Command.CommandId' --output text)"
+        echo "command ${command_id}"
+
+        # Polled by hand rather than with `aws ssm wait command-executed`: that
+        # waiter gives up after about a hundred seconds, which every rebuild
+        # exceeds.
+        deadline=$(( SECONDS + 5700 ))
+        while :; do
+          sleep 10
+          # Checked first, so a call that keeps failing — throttling, a
+          # revoked permission — still times out instead of looping until the
+          # job's own six-hour limit.
+          if (( SECONDS > deadline )); then
+            echo "::error::timed out waiting for ${command_id}"
+            exit 1
+          fi
+          invocation="$(aws ssm get-command-invocation \
+            --command-id "$command_id" --instance-id "$INSTANCE_ID" --output json 2>/dev/null || true)"
+          [[ -z "$invocation" ]] && continue
+          status="$(jq -r '.Status' <<<"$invocation")"
+          case "$status" in
+            Pending|InProgress|Delayed) ;;
+            *) break ;;
+          esac
+        done
+
+        code="$(jq -r '.ResponseCode' <<<"$invocation")"
+        summary="$(jq -r '.StandardOutputContent' <<<"$invocation")"
+
+        # The instance prints one JSON object and keeps everything else in a log
+        # on the box — this output is world-readable on a public repository.
+        if jq -e . >/dev/null 2>&1 <<<"$summary"; then
+          {
+            echo "### Deploy \`$(jq -r .sha <<<"$summary" | cut -c1-12)\`"
+            echo
+            jq -r '"- rebuilt: \(.rebuilt)\n- bootstrapped: \(.bootstrapped)\n- recreated: \(.recreated)\n- took: \(.duration_s)s"' <<<"$summary"
+            echo
+            jq -r '.warnings[]? | "> [!WARNING]\n> \(.)"' <<<"$summary"
+            echo
+            echo '| service | state | health |'
+            echo '|---|---|---|'
+            jq -r '.services[]? | "| \(.name) | \(.state) | \(.health // "-") |"' <<<"$summary"
+          } >>"$GITHUB_STEP_SUMMARY"
+          message="$(jq -r '.message // ""' <<<"$summary")"
+        else
+          message="the instance returned no summary"
+          echo "$summary" >>"$GITHUB_STEP_SUMMARY"
+        fi
+
+        if [[ "$status" != "Success" || "$code" != "0" ]]; then
+          case "$code" in
+            76) echo "::error::deploy deferred — work was in flight. The converge timer will retry within five minutes: ${message}" ;;
+            77) echo "::error::the instance refused to deploy: ${message}" ;;
+            78) echo "::error::that commit is not an ancestor of the deployed branch: ${message}" ;;
+            79) echo "::error::the instance is on hold or its checkout is on another branch: ${message}" ;;
+            *)  echo "::error::deploy failed (${status}, exit ${code}): ${message}. Full log on the instance at /data/deploy/run-${SHA}.log" ;;
+          esac
+          exit 1
+        fi
+
+        echo "deployed ${SHA}"

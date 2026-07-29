@@ -5,11 +5,64 @@ on:
     branches: [main]
   pull_request:
 
+permissions:
+  contents: read
+
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  # Only pull requests. A second merge must never cancel the first one's deploy
+  # half way through `docker compose up`.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
+  # The three packages are installed editable and their sources are bind
+  # mounted on the instance, so SQL, suites, DAGs and Python land without a
+  # rebuild. Only a change to the dependency set or the image itself needs one
+  # — and only that kind of change needs the expensive `stack` job below.
+  changes:
+    name: What changed
+    runs-on: ubuntu-latest
+    outputs:
+      rebuild: ${{ steps.check.outputs.rebuild }}
+      integration: ${{ steps.check.outputs.integration }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - id: check
+        env:
+          BEFORE: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before }}
+          AFTER: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          # A force push, or the first push to a branch, leaves nothing to
+          # compare against. Test everything in that case rather than guess.
+          if [[ -z "$BEFORE" || "$BEFORE" == "0000000000000000000000000000000000000000" ]] \
+             || ! git cat-file -e "${BEFORE}^{commit}" 2>/dev/null; then
+            printf 'rebuild=true\nintegration=true\n' >>"$GITHUB_OUTPUT"
+            echo "no comparable base; testing everything"
+            exit 0
+          fi
+          changed="$(git diff --name-only "$BEFORE" "$AFTER")"
+          echo "$changed"
+
+          # Needs a new image.
+          rebuild=false
+          if grep -qE '^(docker/|uv\.lock$|pyproject\.toml$|(pipeline|quality|metabase)/pyproject\.toml$)' <<<"$changed"; then
+            rebuild=true
+          fi
+
+          # Needs the stack booted before it merges. A compose change needs no
+          # rebuild but absolutely needs testing — otherwise a broken compose
+          # file goes straight to production.
+          integration=$rebuild
+          if grep -qE '^(docker-compose\.yml|\.env\.example|warehouse/)' <<<"$changed"; then
+            integration=true
+          fi
+
+          printf 'rebuild=%s\nintegration=%s\n' "$rebuild" "$integration" >>"$GITHUB_OUTPUT"
+
   # Fast, hermetic: mocked Pylon API, duckdb destination, no network, no secrets.
   unit:
     name: Lint and unit tests
@@ -57,7 +110,13 @@ jobs:
 
   stack:
     name: Stack boots
-    runs-on: ubuntu-latest
+    needs: changes
+    if: needs.changes.outputs.integration == 'true'
+    # arm64, matching the instance. It is not cosmetic: clickhouse-sqlalchemy
+    # pulls in zstd, which publishes no aarch64 wheel and compiles from source.
+    # On x86 the build takes a wheel and never exercises the one path that can
+    # break the host.
+    runs-on: ubuntu-24.04-arm
     steps:
       - uses: actions/checkout@v4
 
@@ -108,3 +167,39 @@ jobs:
       - name: Tear down
         if: always()
         run: docker compose --profile cli down -v
+
+  # Merging is deploying. The check lands on the merge commit, where whoever
+  # merged is already looking.
+  deploy:
+    name: Deploy to AWS
+    needs: [changes, unit, dags, stack]
+    # `stack` is skipped for code-only merges, and a skipped dependency would
+    # skip this job too without an explicit condition.
+    if: >-
+      !cancelled()
+      && github.event_name == 'push'
+      && github.ref == 'refs/heads/main'
+      && needs.changes.result == 'success'
+      && needs.unit.result == 'success'
+      && needs.dags.result == 'success'
+      && (needs.stack.result == 'success' || needs.stack.result == 'skipped')
+    runs-on: ubuntu-latest
+    # The environment is what the deploy role's trust policy matches on, and
+    # what restricts deploys to this branch.
+    environment: production
+    permissions:
+      id-token: write
+      contents: read
+    concurrency:
+      group: deploy-production
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: ./.github/actions/ssm-deploy
+        with:
+          role-arn: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
+          region: ${{ secrets.AWS_REGION }}
+          instance-id: ${{ secrets.DEPLOY_INSTANCE_ID }}
+          sha: ${{ github.sha }}
+          force-rebuild: ${{ needs.changes.outputs.rebuild }}

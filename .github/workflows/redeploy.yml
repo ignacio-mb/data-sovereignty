@@ -1,0 +1,62 @@
+name: Redeploy
+
+# Deploy a specific commit by hand. This is the rollback path: pick the last
+# commit that worked — it is in /data/deploy/history.log on the instance, and
+# in this repository's history — and run it.
+#
+# The instance will only accept a commit that is an ancestor of the deployed
+# branch, so this can move backwards along main but cannot introduce anything
+# that never merged.
+
+on:
+  workflow_dispatch:
+    inputs:
+      sha:
+        description: Full 40-character commit sha to deploy.
+        required: true
+      allow_in_flight:
+        description: Deploy even if a DAG run is in flight.
+        type: boolean
+        default: false
+      force_rebuild:
+        description: Rebuild the image regardless of which paths changed.
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: deploy-production
+  cancel-in-progress: false
+
+jobs:
+  redeploy:
+    name: Redeploy
+    runs-on: ubuntu-latest
+    environment: production
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Validate the input
+        env:
+          # Through the environment, never interpolated into the script: an
+          # input that reaches a `run:` block as text is a shell injection in
+          # the one job that holds an AWS credential.
+          SHA: ${{ inputs.sha }}
+        run: |
+          set -euo pipefail
+          [[ "$SHA" =~ ^[0-9a-f]{40}$ ]] || { echo "::error::sha must be 40 hex characters"; exit 1; }
+          echo "SHA=$SHA" >>"$GITHUB_ENV"
+
+      - uses: ./.github/actions/ssm-deploy
+        with:
+          role-arn: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
+          region: ${{ secrets.AWS_REGION }}
+          instance-id: ${{ secrets.DEPLOY_INSTANCE_ID }}
+          sha: ${{ env.SHA }}
+          allow-in-flight: ${{ inputs.allow_in_flight }}
+          force-rebuild: ${{ inputs.force_rebuild }}

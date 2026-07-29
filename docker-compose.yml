@@ -30,6 +30,12 @@ x-airflow-env: &airflow-env
   # dlt state lives on a named volume so the incremental cursor survives
   # container recreation. It is a matched pair with warehouse-data.
   DLT_DATA_DIR: /opt/dlt-state
+  # dlt re-exports the inferred schema on every ingest, and resolves the directory
+  # from the package — PROJECT_ROOT/schemas, which is bind-mounted — so an ingest
+  # rewrites the tracked pipeline/schemas/export/pylon.schema.yaml. On a host whose
+  # deploy is `git reset --hard`, that is a conflict every hour. dlt reads the
+  # reviewed import schema from the same directory, so airflow-init seeds it here.
+  PYLON_SCHEMA_DIR: /opt/dlt-state/schemas
   PYLON_API_KEY: ${PYLON_API_KEY}
 
   # Container-side view of the warehouse. These deliberately override whatever
@@ -64,7 +70,9 @@ x-airflow-common: &airflow-common
     context: .
     dockerfile: docker/airflow/Dockerfile
     args:
-      AIRFLOW_BASE_IMAGE: ${AIRFLOW_BASE_IMAGE:-apache/airflow:3.3.0-python3.12}
+      # Digest-pinned to match the Dockerfile's own default — a bare tag here would
+      # override the pin. Bumping the tag means re-resolving both.
+      AIRFLOW_BASE_IMAGE: ${AIRFLOW_BASE_IMAGE:-apache/airflow:3.3.0-python3.12@sha256:96e99f25815f533b298a4d53f283adf5c84c27334ea16ef232777cb800bddf10}
   image: data-sovereignty/airflow:local
   environment: *airflow-env
   user: "${AIRFLOW_UID:-50000}:0"
@@ -188,8 +196,11 @@ services:
       MB_ANON_TRACKING_ENABLED: 'false'
       # Production license token: normal run mode, no metastore override.
       MB_PREMIUM_EMBEDDING_TOKEN: ${MB_PREMIUM_EMBEDDING_TOKEN}
-      # The JVM sizes its heap against the container limit, not the host.
-      JAVA_OPTS: -Xmx1500m
+      # The container-aware JVM sizes its heap from the cgroup limit, and with no
+      # limit at all takes ~25% of host RAM — enough to starve ClickHouse and
+      # Airflow on a shared host. Overridable because the right heap depends on
+      # the host: raise both together, never the heap alone.
+      JAVA_OPTS: ${METABASE_JAVA_OPTS:--Xmx1500m}
     mem_limit: ${METABASE_MEM_LIMIT:-2g}
     ports:
       - "${METABASE_HOST_PORT:-3100}:3000"
@@ -214,7 +225,11 @@ services:
     command:
       - -c
       - |
-        mkdir -p /opt/airflow/logs /opt/dlt-state
+        mkdir -p /opt/airflow/logs /opt/dlt-state/schemas/export \
+                 /opt/dlt-state/schemas/import /opt/dlt-state/run-summaries
+        # The import schema is a reviewed override that lives in git, so re-seed it
+        # on every init: dlt keeps whatever it first wrote into an import directory.
+        cp /opt/project/pipeline/schemas/import/*.yaml /opt/dlt-state/schemas/import/ 2>/dev/null || true
         chown -R "${AIRFLOW_UID:-50000}:0" /opt/airflow/logs /opt/dlt-state
         exec runuser -u airflow -- bash -c '
           airflow db migrate &&

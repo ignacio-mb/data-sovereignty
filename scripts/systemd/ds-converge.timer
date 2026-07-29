@@ -1,0 +1,13 @@
+[Unit]
+Description=Check every few minutes whether the live commit is the intended one
+
+[Timer]
+# A merge normally arrives by SSM within seconds. This is the safety net for
+# the merge that could not land then: the instance was rebooting, or the
+# twenty-hour weekly reconcile was holding the ingest pool.
+OnBootSec=2min
+OnUnitActiveSec=5min
+AccuracySec=30s
+
+[Install]
+WantedBy=timers.target
