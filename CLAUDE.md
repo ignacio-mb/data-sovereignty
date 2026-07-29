@@ -1,7 +1,18 @@
 # Working in this repo
 
-A self-hosted data stack: any REST API → ClickHouse → Metabase, orchestrated by Airflow
-and validated by Great Expectations. Designed to be operated by prompt.
+A self-hosted ingestion stack: any REST API → ClickHouse, orchestrated by Airflow
+and validated by Great Expectations, with Metabase hosted on top to read the
+result. Designed to be operated by prompt.
+
+**Its scope is landing raw data and orchestrating that well.** It does not model:
+no transforms, no marts, no metrics, no semantic layer. What the rows *mean* is
+decided in whatever project owns the warehouse's meaning, and keeping the seam
+there is deliberate — scheduling someone else's model is owning it.
+
+**It also ships empty.** No source is connected on a fresh checkout, so nothing
+is scheduled and nothing is fetched until someone adds a spec. Pylon appears only
+as a worked reference example for an agent to copy
+(`.claude/skills/add-source/reference/pylon.yml`); nothing bootstraps it.
 
 **Start with `.claude/skills/data-stack/SKILL.md`** — it routes to the right leaf
 skill for the task. This file is the map and the rules; the skills are the
@@ -11,49 +22,60 @@ procedures.
 
 | Path | What lives there |
 |---|---|
-| `sources/` | One YAML per connector — the source contract |
+| `sources/` | One YAML per connector — the source contract. **Empty on a fresh checkout.** |
 | `pipeline/` | `ingest` CLI — a source spec → `raw_<source>.*` via dlt |
-| `quality/` | `dq` CLI — Great Expectations suites, results → `ops.*` |
-| `airflow/dags/` | Four DAGs; all shell out, none import the packages |
+| `quality/` | `dq` CLI — expectations generated from each spec, results → `ops.*` |
+| `airflow/dags/` | `stack_smoke`, plus DAGs generated per spec. None import the packages. |
 | `docs/` | The AWS deploy runbook |
 | `warehouse/init/` | Runs once, on first init of an empty volume |
 | `terraform/` | The AWS host. `docs/deploy.md` is the runbook. |
 
 The two Python packages are uv workspace members sharing one environment, so
-`ingest` and `dq` are always installed together.
+`ingest` and `dq` are always installed together. `quality` depends on `pipeline`
+for the spec parser and nothing else; the dependency never runs the other way.
 
 ## Warehouse
 
 ```
-raw_pylon.*   dlt owns this. Six tables, merged on id, nested JSON stringified.
-analytics.*   An empty container. The modeling project builds into it; nothing
-              in this repo writes it.
-ops.*         The pipeline's self-knowledge: gx_results, pipeline_runs.
+raw_<source>.*  dlt owns this, one database per connected source. Merged on the
+                spec's primary key, nested JSON stringified. None on a fresh
+                checkout.
+ops.*           The pipeline's self-knowledge: gx_results, pipeline_runs.
 ```
 
 **ClickHouse has no schemas — each of those is a DATABASE.** Metabase shows them
 where it would show Postgres schemas, and everything addresses tables as
 `database.table`.
 
-All three are created by the init SQL, which differs from the usual "let the
-tool own its own schema" arrangement. ClickHouse forces it: a client selects its
-database as part of connecting, so dlt fails with `Code: 81. Database raw_pylon
-does not exist` during its pre-run sync, before it can create anything.
-Ownership of the *contents* belongs to whatever writes them — dlt owns the tables
-in `raw_pylon` and `dq ops-init` owns `ops`. `analytics` is reserved for the
-modeling project and stays empty here.
+Only `ops` is created by the init SQL. `raw_<source>` is created by
+`ensure_database` before dlt connects, not by the init file: ClickHouse selects
+its database as part of connecting, so dlt would fail with `Code: 81. Database
+raw_x does not exist` during its pre-run sync, before it could create anything —
+and the init file runs once on an empty volume, so it could never cover a source
+connected later. Ownership of the *contents* belongs to whatever writes them: dlt
+owns the tables in `raw_<source>`, `dq ops-init` owns `ops`. There is no
+`analytics` database, because nothing here writes one.
 
 **dlt writes into `raw_<source>` directly, with an EMPTY dataset name.** With a
-dataset set, tables arrive as `raw_pylon.raw_pylon___issues`; empty, dlt falls
-through to the bare table name. Do *not* also blank `dataset_table_separator` —
-it changes nothing here (there is no prefix left to separate) and it does reach
-the staging dataset, turning `_staging___issues` into `_stagingissues`.
+dataset set, tables arrive as `raw_x.raw_x___things`; empty, dlt falls through to
+the bare table name. Do *not* also blank `dataset_table_separator` — it changes
+nothing here (there is no prefix left to separate) and it does reach the staging
+dataset, turning `_staging___things` into `_stagingthings`.
 
 The database is set per source at build time rather than in compose, because a
 single global would put every source in one database sharing one soft-delete
 pass. See `build_pipeline` and `ensure_database`.
 
 ## Data quality on ClickHouse
+
+**Expectations are generated from the spec, never hand-written per source.**
+`sources/<name>.yml` declares both what to fetch and what "arrived correctly"
+means for it, and `quality/…/suites/raw.py` turns the second half into GX objects.
+Identity checks — primary key not null, primary key unique, at least one row — are
+not opt-in: every resource gets them whether the spec author thought about them or
+not. Everything else (`quality.required`, `freshness`, `max_deleted_fraction`,
+`references`, `not_null`) is declared. Adding a check for one source means editing
+that source's spec; adding a *kind* of check means editing `raw.py`.
 
 **GX's native column expectations do not compile.** Every `expect_column_*`
 renders `CAST(1, 'Decimal(None, None)')`, which ClickHouse rejects with
@@ -76,13 +98,36 @@ generic `add_sql`.
 
 **Advisory vs gating.** An expectation carrying `meta={"severity": "warn"}` is
 recorded and reported but does not fail the checkpoint. Anything unmarked gates,
-so being ignorable is opt-in. Freshness is the only advisory check: it measures
-when the *tenant* last touched a record, not whether ingestion works, so on a
-quiet weekend it fails while the pipeline is healthy — and a check that reddens
-the DAG for a non-problem teaches you to stop reading red DAGs. Whether a run
-happened is a question about runs, and `ops.pipeline_runs` answers it.
+so being ignorable is opt-in. Freshness is advisory by default: it measures when
+the *source* last changed a record, not whether ingestion works, so on a quiet
+weekend it fails while the pipeline is healthy — and a check that reddens the DAG
+for a non-problem teaches you to stop reading red DAGs. Whether a run happened is
+a question about runs, and `ops.pipeline_runs` answers it. A source that really
+does change hourly can set `severity: error` and gate on it.
 
 ## Hard rules
+
+**The repo ships with no sources, and that is a feature.** `sources/` is empty,
+so no ingest DAG exists and nothing runs. Do not add a spec to `sources/` to
+demonstrate something — put it in a skill's `reference/` directory, which is
+where the Pylon example lives. A repo that arrives running someone else's
+connector is worse than one that arrives running none.
+
+**Nothing here models the data.** No transforms, no marts, no metrics, no
+semantic layer, and no DAG task that builds one. If a task would make this
+pipeline responsible for the meaning of the rows rather than their arrival, it
+belongs in another project. `test_no_dag_builds_or_validates_a_model` enforces it.
+
+**A connector is a spec, not a module.** `sources/<name>.yml` is the whole
+contract: endpoints, paging, incremental strategy, schedule, timeouts, pool, and
+expectations. Nothing about a particular API may be compiled into `pipeline/` or
+`quality/`. The one seam is `extensions:`, for fetch behaviour the declarative
+config genuinely cannot express — an explicit, named escape hatch, not a habit.
+
+**DAGs are generated, never hand-written per source.** `airflow/dags/source_dags.py`
+builds them from the specs. A hand-written DAG would be a second place to change
+a schedule or a timeout, and the two would drift. It reads YAML directly rather
+than importing the spec parser, because of the next rule.
 
 **DAGs shell out; they never import the pipeline packages.** dlt, Great
 Expectations and Airflow all pin large dependency trees. Keeping them in
@@ -91,11 +136,16 @@ reconcile the three.
 
 **Secrets live only in `.env`.** Never echo a value, never paste one into a
 command that gets logged, never commit one. To check configuration, test whether
-a variable is *set*.
+a variable is *set*. A spec names the variable holding its token (`token_env`) and
+never the token; the containers read `.env` wholesale, so connecting a credential
+is one line there and no compose change.
 
-**Ingest through Airflow while the stack is up.** A pool of one serializes dlt
-runs; an out-of-band `ingest run --destination clickhouse` races the incremental
-cursor. `--destination duckdb` is always safe — separate pipeline name.
+**Ingest through Airflow while the stack is up.** A per-source pool of one
+serializes that source's dlt runs; an out-of-band `ingest run --source x` races its
+incremental cursor. `--destination duckdb` is always safe — separate pipeline name.
+The pools are created by `airflow-init` from the specs, so a source added while the
+stack is up needs `docker compose up airflow-init` (or `make up`) before its DAG
+can acquire one.
 
 **`warehouse-data` and `dlt-state` are a matched pair.** The cursor describes
 data in the warehouse. Destroy one without the other and the pipeline believes
@@ -114,10 +164,13 @@ a silent no-op on a long-lived host.
 
 ## Metabase goes through mb-cli
 
-`mb` is the interface to Metabase, and `scripts/bootstrap_metabase.sh` is the one
-place this repo talks to it. The CLI already owns credential resolution, retries,
-redaction, capability preflight, and a versioned self-describing contract;
-re-implementing any of that against the REST API means owning it forever.
+This repo *hosts* Metabase and nothing more: bring it up, run the setup wizard,
+register the warehouse connection, sync its schema. It builds nothing inside it.
+
+`mb` is the interface, and `scripts/bootstrap_metabase.sh` is the one place this
+repo talks to it. The CLI already owns credential resolution, retries, redaction,
+capability preflight, and a versioned self-describing contract; re-implementing any
+of that against the REST API means owning it forever.
 
 Raw REST is a last resort, allowed only where no command exists. Today that is
 exactly four things, each marked at the call site: the health poll,
@@ -128,7 +181,6 @@ curl.** Before writing any new REST call, check:
 ```bash
 mb --help --json | jq -r '.commands[].command'   # the whole surface
 mb <command> --help --json                       # input/output JSON Schema
-mb skills get transform --max-bytes 0            # skills shipped with the binary
 ```
 
 Prefer those over anything written here — this file goes stale, they do not.
@@ -149,7 +201,9 @@ docker compose --profile cli run --rm airflow-cli airflow dags test stack_smoke
 ```
 
 DAG tests need Airflow, which is deliberately outside the default environment:
-`uv sync --group dag-tests && uv run pytest airflow/tests`.
+`make test-dags` (or `uv sync --group dag-tests && uv run pytest airflow/tests`).
+They assert the shipped state schedules only `stack_smoke`, and generate DAGs from
+the skill's reference spec to check the invariants that protect the warehouse.
 
 The deploy path cannot be exercised on a laptop. What can:
 

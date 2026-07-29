@@ -3274,6 +3274,7 @@ dependencies = [
     { name = "clickhouse-connect" },
     { name = "clickhouse-sqlalchemy" },
     { name = "great-expectations" },
+    { name = "ingest-runtime" },
     { name = "python-dotenv" },
     { name = "pyyaml" },
 ]
@@ -3284,6 +3285,7 @@ requires-dist = [
     { name = "clickhouse-connect", specifier = ">=0.8" },
     { name = "clickhouse-sqlalchemy", specifier = ">=0.3.2,<0.4" },
     { name = "great-expectations", specifier = "==1.19.1" },
+    { name = "ingest-runtime", editable = "pipeline" },
     { name = "python-dotenv", specifier = ">=1.0" },
     { name = "pyyaml", specifier = ">=6.0" },
 ]

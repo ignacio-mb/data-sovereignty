@@ -63,7 +63,7 @@ jobs:
 
           printf 'rebuild=%s\nintegration=%s\n' "$rebuild" "$integration" >>"$GITHUB_OUTPUT"
 
-  # Fast, hermetic: mocked Pylon API, duckdb destination, no network, no secrets.
+  # Fast, hermetic: mocked HTTP, duckdb destination, no network, no secrets.
   unit:
     name: Lint and unit tests
     runs-on: ubuntu-latest
@@ -140,7 +140,7 @@ jobs:
           docker compose --profile cli run --rm airflow-cli \
             bash -c 'ingest --help >/dev/null && dq --help >/dev/null'
 
-      - name: The ops schema builds against a real Postgres
+      - name: The ops schema builds against a real warehouse
         run: docker compose --profile cli run --rm airflow-cli dq ops-init
 
       - name: Airflow registers every DAG

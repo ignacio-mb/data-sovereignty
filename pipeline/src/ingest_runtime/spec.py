@@ -34,8 +34,12 @@ _QUALITY_KEYS = {
     "required", "freshness", "max_deleted_fraction", "references", "not_null",
 }
 
-# Strategies the runtime knows how to build. Adding one is a code change, which
-# is the point: a strategy is a fetch algorithm, not a setting.
+# Strategies the runtime recognises. Adding one is a code change, which is the
+# point: a strategy is a fetch algorithm, not a setting.
+#
+# Recognised is not the same as built. Only full_refresh is built declaratively
+# (runtime._DECLARATIVE_STRATEGIES); the other two must be supplied by the spec's
+# `extensions` module, and build_source raises when they are not.
 _STRATEGIES = {"search_window", "parent_watermark", "full_refresh"}
 
 # When absence from a run's loads is allowed to mean "deleted upstream".

@@ -32,11 +32,16 @@ x-airflow-env: &airflow-env
   DLT_DATA_DIR: /opt/dlt-state
   # dlt re-exports the inferred schema on every ingest, and resolves the directory
   # from the package — PROJECT_ROOT/schemas, which is bind-mounted — so an ingest
-  # rewrites the tracked pipeline/schemas/export/pylon.schema.yaml. On a host whose
-  # deploy is `git reset --hard`, that is a conflict every hour. dlt reads the
-  # reviewed import schema from the same directory, so airflow-init seeds it here.
+  # would rewrite a tracked file. On a host whose deploy is `git reset --hard`,
+  # that is a conflict every hour. dlt reads the reviewed import schema from the
+  # same directory, so airflow-init seeds it here.
   DS_SCHEMA_DIR: /opt/dlt-state/schemas
-  PYLON_API_KEY: ${PYLON_API_KEY}
+  # Where the connected sources' specs live. Set explicitly because the ingest
+  # package is INSTALLED into /opt/data-venv, so the repo root it would otherwise
+  # derive from its own __file__ resolves inside site-packages. The DAG processor
+  # (which reads the specs to generate DAGs) and the CLIs (which read them to run)
+  # have to agree on one directory, and this is it.
+  DS_SOURCES_DIR: /opt/project/sources
 
   # Container-side view of the warehouse. These deliberately override whatever
   # is in .env (which holds the host-facing localhost values), so neither side
@@ -46,9 +51,13 @@ x-airflow-env: &airflow-env
   DESTINATION__CLICKHOUSE__CREDENTIALS__HTTP_PORT: '8123'
   DESTINATION__CLICKHOUSE__CREDENTIALS__USERNAME: ${WAREHOUSE_USER}
   DESTINATION__CLICKHOUSE__CREDENTIALS__PASSWORD: ${WAREHOUSE_PASSWORD}
-  # dlt writes into raw_pylon itself, not into a dataset inside another
-  # database — see build_pipeline for why an empty dataset name is required.
-  DESTINATION__CLICKHOUSE__CREDENTIALS__DATABASE: raw_pylon
+  # Only the database a connection SELECTS, never one that is queried: every
+  # table name in this stack is qualified. Each source lands in its own
+  # raw_<source>, which build_pipeline sets per run — a source name here would
+  # put every source in one database, sharing one soft-delete pass. Pinned to
+  # `default` rather than left unset so a stale .env on a long-lived host cannot
+  # reintroduce one.
+  DESTINATION__CLICKHOUSE__CREDENTIALS__DATABASE: default
   DESTINATION__CLICKHOUSE__CREDENTIALS__SECURE: '0'
 
   # ── Metabase ──
@@ -57,7 +66,10 @@ x-airflow-env: &airflow-env
   MB_URL: http://metabase:3000
 
   # ── Data quality ──
-  GX_FRESHNESS_HOURS: ${GX_FRESHNESS_HOURS:-24}
+  # Passed through EMPTY when unset, not defaulted to a number: each source
+  # declares its own freshness SLO in its spec, and a value here overrides every
+  # one of them. Defaulting it would silently flatten every contract to 24h.
+  GX_FRESHNESS_HOURS: ${GX_FRESHNESS_HOURS:-}
   GX_DOCS_DIR: /opt/project/quality/gx_output/data_docs
 
 x-airflow-common: &airflow-common
@@ -69,15 +81,33 @@ x-airflow-common: &airflow-common
       # override the pin. Bumping the tag means re-resolving both.
       AIRFLOW_BASE_IMAGE: ${AIRFLOW_BASE_IMAGE:-apache/airflow:3.3.0-python3.12@sha256:96e99f25815f533b298a4d53f283adf5c84c27334ea16ef232777cb800bddf10}
   image: data-sovereignty/airflow:local
+  # Every variable in .env, so that a source's API token reaches the container
+  # without compose having to name it. A spec declares `token_env: FOO_TOKEN`;
+  # putting FOO_TOKEN in .env is then the whole of connecting its credential, and
+  # adding a source stays a spec plus a secret rather than a compose edit.
+  #
+  # `environment:` below wins over this, which is what keeps the container-side
+  # warehouse values from being shadowed by .env's host-facing ones.
+  #
+  # Plain string form, not `{path:, required: false}`: that spelling needs Compose
+  # 2.24 and this stack supports 2.17. So .env must exist — which it already had
+  # to, since every credential below interpolates from it; the difference is that
+  # a missing one now says so instead of quietly resolving to empty strings.
+  # `make` guards on it.
+  env_file:
+    - .env
   environment: *airflow-env
   user: "${AIRFLOW_UID:-50000}:0"
   volumes:
     - ./airflow/dags:/opt/airflow/dags
     - ./airflow/logs:/opt/airflow/logs
-    # The workspace is bind-mounted so edits to SQL, suites and DAGs take effect
-    # without a rebuild. Dependency changes still need `make build`.
+    # The workspace is bind-mounted so edits to specs, suites and DAGs take
+    # effect without a rebuild. Dependency changes still need `make build`.
     - ./pipeline:/opt/project/pipeline
     - ./quality:/opt/project/quality
+    # Read-only: specs are authored in the repo on the host, and nothing in the
+    # stack has any business writing one.
+    - ./sources:/opt/project/sources:ro
     - dlt-state:/opt/dlt-state
   depends_on:
     warehouse-db:
@@ -230,16 +260,46 @@ services:
     command:
       - -c
       - |
-        mkdir -p /opt/airflow/logs /opt/dlt-state/schemas/export \
-                 /opt/dlt-state/schemas/import /opt/dlt-state/run-summaries
-        # The import schema is a reviewed override that lives in git, so re-seed it
+        mkdir -p /opt/airflow/logs /opt/dlt-state/schemas /opt/dlt-state/run-summaries
+        # An import schema is a reviewed override that lives in git, so re-seed it
         # on every init: dlt keeps whatever it first wrote into an import directory.
-        cp /opt/project/pipeline/schemas/import/*.yaml /opt/dlt-state/schemas/import/ 2>/dev/null || true
+        # Per source — schema_dir() is schemas/<source>/{import,export}, so a flat
+        # copy would land somewhere dlt never looks.
+        for dir in /opt/project/pipeline/schemas/*/import; do
+          [ -d "$dir" ] || continue
+          source=$(basename "$(dirname "$dir")")
+          mkdir -p "/opt/dlt-state/schemas/$source/import"
+          cp "$dir"/*.yaml "/opt/dlt-state/schemas/$source/import/" 2>/dev/null || true
+        done
         chown -R "${AIRFLOW_UID:-50000}:0" /opt/airflow/logs /opt/dlt-state
         exec runuser -u airflow -- bash -c '
-          airflow db migrate &&
-          airflow pools set pylon_pipeline 1 \
-            "Serializes dlt runs: concurrent ingests would race the incremental cursor."
+          set -euo pipefail
+          airflow db migrate
+          # One pool per connected source, each with a single slot: concurrent
+          # runs of the same source would race its incremental cursor, and a
+          # shared pool would serialize sources that have no reason to wait for
+          # each other. Derived from the specs rather than listed here — a
+          # generated DAG referencing a pool nobody created queues forever, and
+          # a queued task looks like a slow one, not a broken one.
+          #
+          # Names must match source_dags._orchestration: the spec pool, else
+          # <name>_pipeline.
+          # $$ throughout: a single $ is interpolated by compose itself, which
+          # would substitute these shell variables with empty strings before the
+          # container ever saw them — silently creating no pools at all.
+          for spec in /opt/project/sources/*.yml; do
+            [ -e "$$spec" ] || continue
+            pool=$$(python -c "
+        import sys, yaml
+        doc = yaml.safe_load(open(sys.argv[1])) or {}
+        name = doc.get(\"name\")
+        if name:
+            print((doc.get(\"orchestration\") or {}).get(\"pool\") or f\"{name}_pipeline\")
+        " "$$spec") || continue
+            [ -n "$$pool" ] || continue
+            airflow pools set "$$pool" 1 \
+              "Serializes dlt runs for one source: concurrent ingests would race its cursor."
+          done
         '
     restart: "no"
     depends_on:

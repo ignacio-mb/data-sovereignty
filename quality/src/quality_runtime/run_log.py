@@ -16,7 +16,7 @@ COLUMNS = (
 
 
 def record(summary, status="succeeded"):
-    """Persist one `pylon ingest --summary-json` payload."""
+    """Persist one `ingest run --summary-json` payload."""
     row = {
         **airflow_context(),
         "status": status,

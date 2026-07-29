@@ -175,6 +175,7 @@ def _backfill_dag(document, conf):
         record = _record_task()
 
         backfill >> verify >> record
+        [verify, record] >> run_verdict()
     return dag
 
 
@@ -213,6 +214,7 @@ def _reconcile_dag(document, conf):
         record = _record_task()
 
         reconcile >> verify >> record
+        [verify, record] >> run_verdict()
     return dag
 
 

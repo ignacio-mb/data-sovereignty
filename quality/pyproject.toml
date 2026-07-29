@@ -1,9 +1,15 @@
 [project]
 name = "quality-runtime"
 version = "0.1.0"
-description = "Great Expectations suites for the Pylon warehouse"
+description = "Great Expectations suites generated from each source's contract"
 requires-python = ">=3.11,<3.14"
 dependencies = [
+    # For the source spec, and only for that. A source declares its expectations
+    # in the same file that declares what to fetch, so parsing it belongs in one
+    # place; a second parser here would be a second thing to keep in step with
+    # the contract. The dependency runs one way — nothing in the pipeline
+    # imports the quality package.
+    "ingest-runtime",
     # Exact pin: Great Expectations moves its Core API between minors, so an
     # upgrade is a deliberate event with a test run attached, never a drift.
     # NOT great-expectations[clickhouse]: that extra is unsatisfiable on

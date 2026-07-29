@@ -114,22 +114,34 @@ quietly loses rows is worse than a connector with a Python file.
 In order. Each step is cheap and rules out a different failure.
 
 ```bash
+# 0. The spec parses, and this is the name everything else is keyed on
+docker compose --profile cli run --rm airflow-cli ingest sources
+
 # 1. Fetch shape and transform, against duckdb — never touches production state
 docker compose --profile cli run --rm airflow-cli \
-  ingest run --destination duckdb --sample 3
+  ingest run --source <name> --destination duckdb --sample 3
 
 # 2. A bounded real load
-docker compose --profile cli run --rm airflow-cli ingest run --destination clickhouse
+docker compose --profile cli run --rm airflow-cli ingest run --source <name>
 
-# 3. The quality gate
-docker compose --profile cli run --rm airflow-cli dq run --checkpoint raw_<name>
+# 3. The quality gate — generated from this spec's own `quality` block
+docker compose --profile cli run --rm airflow-cli dq run --source <name>
 ```
 
 `--sample 3` prints records **post-transform, pre-load** — exactly as they will
-land. Read them. A promoted field that is `None` for every record means the path
-in `promote` is wrong, and no test will catch that.
+land. Read them. A promoted field that is `None` for every record means the path in
+`promote` is wrong, and no test will catch that.
 
-Then check the warehouse: `make ch`, then `SELECT count() FROM raw_<name>.<table>`.
+Then check the warehouse:
+`make ch-q Q="SELECT count() FROM raw_<name>.<table>"`.
+
+Finish with `make up`. Two things only take effect once the stack is re-initialised:
+
+- **the Airflow pool** `<name>_pipeline`, which `airflow-init` creates from the
+  specs. Until it exists the generated DAG's fetch task queues forever — which reads
+  as a slow run rather than a broken one.
+- **the token**, if the containers were already running when it was added to `.env`:
+  container environments are frozen at create time.
 
 ## Rules
 

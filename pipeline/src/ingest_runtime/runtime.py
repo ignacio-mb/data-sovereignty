@@ -23,8 +23,19 @@ because each is an algorithm, not a setting:
                       from the warehouse: children whose parent changed more
                       recently than the newest child already loaded.
 
-A connector needing something none of these describes writes an extension
-module. That is a deliberate seam, not a failure — see extensions().
+**Only `full_refresh` is built here** — see _DECLARATIVE_STRATEGIES. dlt's
+declarative REST source covers it end to end, so a spec using nothing else needs
+no Python whatsoever, which is the case worth optimising for.
+
+The other two name an algorithm this module recognises but does not implement: a
+spec declaring one must also declare an `extensions:` module supplying it, and
+build_source raises if it does not. Recognising the name still earns its keep —
+it is what makes the failure "you owe this connector a fetch function" instead of
+an unknown-strategy error, and it keeps the soft-delete rules (which differ by
+strategy) expressible in the spec.
+
+A connector needing something none of these describes writes an extension module
+too. That is a deliberate seam, not a failure — see extensions().
 """
 
 from __future__ import annotations
@@ -47,8 +58,67 @@ def pacer(spec):
     Proactive rather than reactive: the limits come from the spec, which the
     add-source research step fills in from the API's own documentation, so the
     pacer never has to discover them by being told to stop.
+
+    Constructing one paces nothing by itself — it has to reach the request path,
+    which is what `paced_session` is for. That seam was briefly open: the CLI built
+    a pacer, handed it to nothing, and reported its (always empty) counters in the
+    run summary, so the stack claimed to pace itself and did not.
     """
     return EndpointPacer(spec.rate_limits)
+
+
+def _routes(spec):
+    """[(path, family)] longest path first, so a more specific route wins.
+
+    A family groups endpoints sharing one published budget; a resource declaring
+    none gets its own name, and so its own budget.
+    """
+    routes = [
+        (resource.endpoint.get("path", f"/{resource.name}"), resource.family)
+        for resource in spec.resources
+    ]
+    routes.sort(key=lambda route: len(route[0]), reverse=True)
+    return routes
+
+
+def _family_for(url, routes):
+    from urllib.parse import urlparse
+
+    path = urlparse(url).path
+    for route, family in routes:
+        if route and route in path:
+            return family
+    # Counted under a name that says what happened rather than dropped: a summary
+    # showing requests against an unrecognised route is how you find out a
+    # paginator is following a link nobody declared.
+    return "unmatched"
+
+
+def paced_session(spec, pacer):
+    """dlt's own session, with the spec's rate limits applied before each request.
+
+    Built from `dlt.sources.helpers.requests.retry.Client` — exactly what dlt would
+    have constructed for itself — so the retry, timeout and backoff behaviour
+    configured through the RUNTIME__REQUEST_* variables is preserved. Passing a
+    bare `requests.Session` here would silently drop all of it.
+
+    Pacing wraps `send`, so it covers every request the declarative source makes,
+    including the paginator's follow-ups. Adapter-level retries of a single request
+    are not re-paced: a retry carries its own backoff, and this budget exists to
+    make 429s rare rather than to govern recovery from one.
+    """
+    from dlt.sources.helpers.requests.retry import Client
+
+    session = Client(raise_for_status=False).session
+    routes = _routes(spec)
+    send = session.send
+
+    def paced_send(request, **kwargs):
+        pacer.wait(_family_for(request.url, routes))
+        return send(request, **kwargs)
+
+    session.send = paced_send
+    return session
 
 
 def column_hints(resource):
@@ -192,13 +262,17 @@ def _paginator(spec, resource):
     return declared
 
 
-def build_source(spec, selected=None, extension=None):
+def build_source(spec, selected=None, extension=None, paced=None):
     """A dlt source for `spec`, covering the resources in `selected`.
 
     Resources whose strategy the declarative layer cannot express are handed to
     the extension module. If the spec names one and it does not supply the
     resource, that is an error rather than a silent omission: a connector that
     quietly skips an endpoint looks exactly like one whose source has no data.
+
+    `paced` is the run's EndpointPacer. Passing it is what makes the spec's
+    `rate_limits` take effect; without it the source fetches as fast as the API
+    will answer.
     """
     from dlt.sources.rest_api import rest_api_source
 
@@ -222,12 +296,15 @@ def build_source(spec, selected=None, extension=None):
 
     sources = []
     if declarative:
+        client = {
+            "base_url": spec.base_url,
+            "auth": _auth(spec),
+            "headers": spec.api.get("headers") or {},
+        }
+        if paced is not None:
+            client["session"] = paced_session(spec, paced)
         sources.append(rest_api_source({
-            "client": {
-                "base_url": spec.base_url,
-                "auth": _auth(spec),
-                "headers": spec.api.get("headers") or {},
-            },
+            "client": client,
             "resource_defaults": {"write_disposition": "merge"},
             "resources": [_resource_config(spec, r) for r in declarative],
         }, name=spec.name))

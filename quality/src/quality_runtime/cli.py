@@ -1,4 +1,11 @@
-"""CLI: `dq` — data quality for the Pylon warehouse."""
+"""CLI: `dq` — does what landed in the warehouse match the contract it landed under?
+
+Addressed by source, not by layer. Each connected source declares its own
+expectations in `sources/<name>.yml`, and `dq run --source <name>` validates the
+`raw_<name>` database against them. There is no enumeration of checkpoints here to
+keep in step with the specs, and nothing downstream of raw: what the rows go on to
+mean is another project's to validate.
+"""
 
 import json
 import logging
@@ -8,12 +15,6 @@ import click
 from dotenv import load_dotenv
 
 log = logging.getLogger(__name__)
-
-# One entry per source. The namespace grows with the connectors, not with the
-# layers: everything downstream of raw is another project's to validate.
-CHECKPOINTS = {
-    "raw_pylon": "suites.raw_pylon",
-}
 
 
 def _setup_logging(verbose):
@@ -46,7 +47,7 @@ def ops_init():
 @click.option("--status", default="succeeded", show_default=True,
               help="Outcome of the ingest task this summary came from.")
 def record_run(summary_json, status):
-    """Record a `pylon ingest --summary-json` file into ops.pipeline_runs."""
+    """Record an `ingest run --summary-json` file into ops.pipeline_runs."""
     from .run_log import record
 
     with open(summary_json) as handle:
@@ -68,17 +69,43 @@ def docs_build():
     click.echo(f"data docs: {target / 'index.html'}")
 
 
+@cli.command("sources")
+def list_sources():
+    """List the sources whose contracts can be validated."""
+    from ingest_runtime.spec import available, load
+
+    names = available()
+    if not names:
+        click.echo("no sources connected — add one with the add-source skill, "
+                   "which writes sources/<name>.yml")
+        return
+    for name in names:
+        spec = load(name)
+        checks = sum(len(expectations) for expectations in _spec_suites(spec).values())
+        click.echo(f"{name:16} {len(spec.resources):2} resources   {checks:3} expectations")
+
+
 @cli.command()
-@click.option("--checkpoint", type=click.Choice(sorted(CHECKPOINTS)), required=True,
-              help="Which layer to validate.")
+@click.option("--source", "source_name", required=True,
+              help="Which source's raw contract to validate. `dq sources` lists them.")
 @click.option("--fail-on-error/--no-fail-on-error", default=True, show_default=True,
               help="Exit non-zero when an expectation fails.")
-def run(checkpoint, fail_on_error):
-    """Validate a layer of the warehouse and record the results in ops.gx_results."""
+def run(source_name, fail_on_error):
+    """Validate a source's raw tables and record the results in ops.gx_results."""
+    from ingest_runtime.spec import SpecError, load
+
     from . import results as results_module
     from .context import build_checkpoint, build_context
 
-    suites = _raw_suites()
+    try:
+        spec = load(source_name)
+    except SpecError as error:
+        raise click.ClickException(str(error)) from error
+
+    # The checkpoint keeps the name the ops tables have always recorded, so a
+    # source's history stays one series across this change.
+    checkpoint = spec.dataset
+    suites = _raw_suites(spec)
 
     if not suites:
         click.echo(f"{checkpoint}: nothing to validate yet")
@@ -95,7 +122,7 @@ def run(checkpoint, fail_on_error):
         raise click.ClickException(
             f"{checkpoint}: the tables to validate are not in the warehouse yet.\n"
             f"  {exc}\n"
-            "Run `make ingest` first."
+            f"Run `ingest run --source {spec.name}` first."
         ) from exc
     log.info("running checkpoint %s over %d asset(s)", checkpoint, len(suites))
     result = gx_checkpoint.run()
@@ -116,34 +143,45 @@ def run(checkpoint, fail_on_error):
         sys.exit(1)
 
 
-def _raw_suites():
-    """The raw suites, narrowed to the tables that actually landed.
+def _spec_suites(spec):
+    """Every expectation the spec declares, assuming all its tables exist.
+
+    Used for reporting the size of a contract. Validation goes through
+    _raw_suites, which narrows it to what is actually in the warehouse.
+    """
+    from .suites.raw import build
+
+    return build(spec)
+
+
+def _raw_suites(spec):
+    """The source's suites, narrowed to the tables that actually landed.
 
     A resource that has never yielded a row has no table at all, and validating
     the five that exist is worth more than failing all six. The skip is printed
     rather than swallowed: "not checked" and "checked and passed" are different
     answers, and the DAG log should show which one it got.
     """
-    from .config import RAW_SCHEMA
     from .context import present_tables
-    from .suites.raw_pylon import ENTITY_TABLES, REQUIRED_TABLES, build
+    from .suites.raw import build, entity_tables, required_tables
 
-    landed = present_tables(RAW_SCHEMA)
+    database = spec.dataset
+    landed = present_tables(database)
 
-    absent_required = [table for table in REQUIRED_TABLES if table not in landed]
+    absent_required = [table for table in required_tables(spec) if table not in landed]
     if absent_required:
         raise click.ClickException(
-            f"raw_pylon: {', '.join(f'{RAW_SCHEMA}.{t}' for t in absent_required)} "
+            f"{database}: {', '.join(f'{database}.{t}' for t in absent_required)} "
             f"{'is' if len(absent_required) == 1 else 'are'} not in the warehouse.\n"
-            "Run `make ingest` first."
+            f"Run `ingest run --source {spec.name}` first."
         )
 
-    for table in ENTITY_TABLES:
+    for table in entity_tables(spec):
         if table not in landed:
-            click.echo(f"raw_pylon: skipping {RAW_SCHEMA}.{table} — no rows have ever "
+            click.echo(f"{database}: skipping {database}.{table} — no rows have ever "
                        f"been ingested for it, so dlt never created the table")
 
-    return build(present=landed)
+    return build(spec, present=landed)
 
 
 def _report(checkpoint, rows):

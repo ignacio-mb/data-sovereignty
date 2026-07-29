@@ -16,13 +16,18 @@ Then check which required secrets are still blank — **without printing their
 values**:
 
 ```bash
-grep -E '^(PYLON_API_KEY|MB_PREMIUM_EMBEDDING_TOKEN|MB_ADMIN_PASSWORD)=' .env \
+grep -E '^(MB_PREMIUM_EMBEDDING_TOKEN|MB_ADMIN_PASSWORD)=' .env \
   | sed -E 's/=(.+)/= [set]/'
 ```
 
-Anything showing `=` with nothing after it needs the user. Ask for all missing
-ones in a single question; do not ask them to paste values into the chat if you
-can avoid it — tell them to edit `.env` directly, then continue.
+Anything showing `=` with nothing after it needs the user. Ask for all missing ones
+in a single question; do not ask them to paste values into the chat if you can avoid
+it — tell them to edit `.env` directly, then continue.
+
+Those two are all the stack itself needs. **Source credentials are not part of
+setup**, because no source ships connected: each spec names the variable holding its
+token in `api.auth.token_env`, and `add-source` says which name to add when a source
+is connected.
 
 ```bash
 make build   # ~5-10 min the first time
@@ -31,10 +36,11 @@ make up      # starts services, bootstraps Metabase, provisions an API key
 
 `make bootstrap` (which `make up` runs, and which is safe to re-run on its own)
 is the gate: it is what proves the instance is provisioned — set up, holding a
-working API key, and connected to the warehouse. It also reports the licence's
-token features. Missing features are not a blocker here; nothing in this stack
-needs them. Say plainly that the instance is effectively OSS and that modeling
-against it will not work until the token is valid.
+working API key, and connected to the warehouse. It also reports whether the licence
+token was accepted. An unaccepted token is not a blocker here: the instance behaves
+like OSS and everything this stack does — ingestion, quality, the warehouse, the
+`ops` history — works either way. Say plainly that it is effectively OSS rather than
+implying something is broken.
 
 ## Daily
 

@@ -36,10 +36,9 @@ dag-tests = [
 
 [tool.pytest.ini_options]
 testpaths = ["pipeline/tests", "quality/tests", "airflow/tests"]
-markers = [
-    "postgres: needs a live warehouse; deselected by default, run via `make test-postgres`",
-]
-addopts = "-m 'not postgres'"
+# No markers and nothing deselected: every test runs offline, against mocked HTTP
+# and duckdb, so there is no subset to hold back. airflow/tests skips itself when
+# Airflow is absent — its own importorskip, not a marker.
 
 [tool.ruff]
 line-length = 110

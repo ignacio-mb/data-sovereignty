@@ -1,25 +1,25 @@
 -- Runs once, on first initialization of an empty warehouse volume.
 --
--- ClickHouse has no schemas: a "schema" IS a database. The three logical layers
--- are therefore three databases, and Metabase shows them where it would show
--- Postgres schemas.
+-- ClickHouse has no schemas: a "schema" IS a database. Only one is created here,
+-- and it is the one this repo owns outright:
 --
--- All three are created here, which differs from the Postgres arrangement where
--- dlt and Metabase each created their own schema. ClickHouse forces it: a
--- client selects its database as part of connecting, so dlt fails with
--- "Code: 81. Database raw_pylon does not exist" during its pre-run sync, before
--- it has a chance to create anything. The database has to be there first.
+--   ops   the pipeline's self-knowledge — quality verdicts and ingest runs.
+--         `dq ops-init` owns the tables inside it and creates them on every run.
 --
--- Ownership of the CONTENTS belongs to whatever writes them: dlt owns the tables
--- in raw_pylon and `dq ops-init` owns the tables in ops. Nothing in this repo
--- writes analytics — it is the container the modeling project builds into, and
--- it is created here because here is the only chance: this file runs once, and
--- adding a database afterwards means a hand-run statement on every host.
+-- No raw_<source> database is created here, deliberately. This file runs once, on
+-- an empty volume, so it could only ever know about the sources connected on the
+-- day the host was built — and a source connected afterwards would never get one.
+-- `ensure_database` in the ingest runtime creates raw_<source> before dlt connects
+-- instead, which covers both cases with one mechanism. (It has to happen before
+-- dlt connects at all: ClickHouse selects the database as part of connecting, so
+-- dlt fails its pre-run sync with "Code: 81. Database raw_x does not exist" before
+-- it could create anything itself.)
 --
--- This file creates empty containers and nothing else.
+-- Nor is there an `analytics` database. Nothing in this repo writes one — the
+-- stack lands raw sources and orchestrates them, and what the rows mean is decided
+-- elsewhere. Whatever builds models can create its own container; an empty one
+-- here would only advertise a layer that does not exist.
 
-CREATE DATABASE IF NOT EXISTS raw_pylon;
-CREATE DATABASE IF NOT EXISTS analytics;
 CREATE DATABASE IF NOT EXISTS ops;
 
 -- No GRANTs here, deliberately. CLICKHOUSE_USER makes the entrypoint define the

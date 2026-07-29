@@ -5,9 +5,9 @@ COMPOSE := docker compose
 # Run one-off commands in the Airflow image: it has ingest and dq on PATH.
 RUN := $(COMPOSE) --profile cli run --rm airflow-cli
 
-.PHONY: help env up down nuke bootstrap ingest backfill quality docs status logs ch \
-        test test-warehouse build smoke secrets-push secrets-pull remote tunnels \
-        deploy-status hold unhold disk
+.PHONY: help env require-env up down nuke bootstrap sources ingest backfill quality \
+        docs status logs ch ch-q test test-dags build smoke secrets-push secrets-pull \
+        remote tunnels deploy-status hold unhold disk
 
 help: ## Show this help
 	@grep -hE '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) \
@@ -19,12 +19,19 @@ env: ## Create .env from .env.example and generate Airflow secrets
 	@if [ ! -f .env ]; then cp .env.example .env; echo "created .env"; \
 	 else echo ".env already exists, leaving it alone"; fi
 	@bash scripts/gen_secrets.sh .env
-	@echo "Now fill in PYLON_API_KEY, MB_PREMIUM_EMBEDDING_TOKEN and MB_ADMIN_PASSWORD."
+	@echo "Now fill in MB_PREMIUM_EMBEDDING_TOKEN and MB_ADMIN_PASSWORD."
+	@echo "Then connect a source: nothing is ingested until you do."
 
-build: ## Build the Airflow image (ingest + dq)
+# Every credential in docker-compose.yml interpolates from .env, and the
+# containers read it wholesale so a source's token needs no compose edit. Without
+# it the stack used to come up with blank passwords; now it says so first.
+require-env:
+	@test -f .env || { echo "No .env yet — run 'make env' first."; exit 2; }
+
+build: require-env ## Build the Airflow image (ingest + dq)
 	$(COMPOSE) build
 
-up: ## Bring the stack up in stages and bootstrap Metabase
+up: require-env ## Bring the stack up in stages and bootstrap Metabase
 	$(COMPOSE) up -d --wait warehouse-db metabase-app-db airflow-db metabase
 	bash scripts/bootstrap_metabase.sh
 	$(COMPOSE) up -d --wait airflow-apiserver airflow-scheduler airflow-dag-processor airflow-triggerer datadocs
@@ -42,17 +49,26 @@ bootstrap: ## (Re-)run Metabase bootstrap: setup, warehouse connection, API key
 	bash scripts/bootstrap_metabase.sh
 
 # ─── Pipeline ────────────────────────────────────────────────────────────────
+# Every target here takes SOURCE, because this repo ships with no sources: the
+# DAGs are generated per spec in sources/, so there is no default one to mean.
+# `make sources` lists what is connected.
 
-ingest: ## Trigger the hourly ingest DAG now
-	$(RUN) airflow dags trigger pylon_ingest_hourly
+sources: ## List the connected sources
+	$(RUN) ingest sources
 
-backfill: ## Trigger a backfill: make backfill START=2026-01-01 [END=2026-02-01]
-	@test -n "$(START)" || (echo "usage: make backfill START=YYYY-MM-DD [END=YYYY-MM-DD]" && exit 2)
-	$(RUN) airflow dags trigger pylon_backfill \
+ingest: ## Trigger a source's ingest DAG now: make ingest SOURCE=name
+	@test -n "$(SOURCE)" || (echo "usage: make ingest SOURCE=name  (make sources to list)" && exit 2)
+	$(RUN) airflow dags trigger $(SOURCE)_ingest
+
+backfill: ## Backfill a range: make backfill SOURCE=name START=2026-01-01 [END=2026-02-01]
+	@test -n "$(SOURCE)" || (echo "usage: make backfill SOURCE=name START=YYYY-MM-DD [END=YYYY-MM-DD]" && exit 2)
+	@test -n "$(START)" || (echo "usage: make backfill SOURCE=name START=YYYY-MM-DD [END=YYYY-MM-DD]" && exit 2)
+	$(RUN) airflow dags trigger $(SOURCE)_backfill \
 		--conf '{"start":"$(START)","end":"$(END)"}'
 
-quality: ## Run the raw data-quality checkpoint
-	$(RUN) dq run --checkpoint raw_pylon
+quality: ## Validate a source's raw contract: make quality SOURCE=name
+	@test -n "$(SOURCE)" || (echo "usage: make quality SOURCE=name  (make sources to list)" && exit 2)
+	$(RUN) dq run --source $(SOURCE)
 
 docs: ## Rebuild Great Expectations data docs (served on $$DATADOCS_HOST_PORT)
 	$(RUN) dq docs-build
@@ -75,6 +91,14 @@ ch: ## Open a clickhouse-client shell on the warehouse
 	@set -a; . ./.env; set +a; \
 	 $(COMPOSE) exec warehouse-db \
 	   clickhouse-client --user "$$WAREHOUSE_USER" --password "$$WAREHOUSE_PASSWORD"
+
+# The credentials are expanded INSIDE the container, from the environment the
+# warehouse already has, so the password never reaches a host command line and
+# never lands in a shell history or a CI log. Only the query does.
+ch-q: ## Run one SQL statement on the warehouse: make ch-q Q='SELECT 1'
+	@test -n "$(Q)" || (echo "usage: make ch-q Q='SELECT 1'" && exit 2)
+	@$(COMPOSE) exec -T -e DS_QUERY="$(Q)" warehouse-db sh -c \
+	  'clickhouse-client --user "$$CLICKHOUSE_USER" --password "$$CLICKHOUSE_PASSWORD" --query "$$DS_QUERY"'
 
 smoke: ## Run the stack_smoke DAG against the running stack
 	$(RUN) airflow dags test stack_smoke
@@ -126,5 +150,5 @@ disk: ## What is using /data on the instance
 test: ## Run the offline test suite (mocked API, duckdb, no network)
 	uv run pytest
 
-test-warehouse: ## Run tests that need the live warehouse
-	uv run pytest -m clickhouse
+test-dags: ## Import-check the generated DAGs (needs Airflow, not in the default env)
+	uv sync --group dag-tests && uv run pytest airflow/tests

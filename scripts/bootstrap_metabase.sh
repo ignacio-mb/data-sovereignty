@@ -190,26 +190,25 @@ fi
 # Everything below authenticates as mb, via MB_URL + MB_API_KEY in the environment.
 
 # ─── 4. License check ────────────────────────────────────────────────────────
-# Informational. Enterprise boots happily without a token and then behaves like
-# OSS, and nothing this stack does needs one — but the operator running this
-# script is the one who owns the token, so this is where a missing one should
-# surface, not in the project that later discovers it cannot build a transform.
+# Purely informational, and deliberately not a list of features. Enterprise boots
+# happily without a token and then behaves like OSS, and nothing this stack does
+# needs one — ingestion, quality, the warehouse and the ops history are all
+# unaffected. But the operator running this script owns the token, so a token the
+# server did not accept should surface here rather than being discovered later.
+#
+# Reporting whether the token took, rather than checking named features: the
+# features that matter depend on what someone does *inside* Metabase, which is not
+# this repo's business, and a hardcoded list would go stale on any release that
+# renames one.
 
-echo "==> Checking Enterprise license features"
-FEATURES="$(mb setting get token-features --json --max-bytes 0 \
-  | jq -r '.value // {} | to_entries | map(select(.value)) | map(.key) | join(" ")')"
-missing=()
-# Exact feature names as reported by the server. It is "transforms-basic":
-# there is no feature called plain "transforms".
-for feature in transforms-basic remote_sync library; do
-  grep -qw "$feature" <<<"$FEATURES" || missing+=("$feature")
-done
-if (( ${#missing[@]} )); then
-  warn "license is missing: ${missing[*]}"
-  warn "the modeling project needs these; this stack does not. Ingestion, quality and the"
-  warn "warehouse all work as they are — set a valid MB_PREMIUM_EMBEDDING_TOKEN before modeling."
+echo "==> Checking the Enterprise license token"
+FEATURE_COUNT="$(mb setting get token-features --json --max-bytes 0 \
+  | jq -r '.value // {} | to_entries | map(select(.value)) | length')"
+if [[ "${FEATURE_COUNT:-0}" -eq 0 ]]; then
+  warn "no Enterprise features are active — the instance is running as OSS."
+  warn "Nothing this stack does needs them; set MB_PREMIUM_EMBEDDING_TOKEN if you want them."
 else
-  note "transforms-basic, remote_sync and library all present"
+  note "license accepted (${FEATURE_COUNT} features active)"
 fi
 
 # ─── 5. Connect the warehouse ────────────────────────────────────────────────
@@ -287,7 +286,7 @@ Metabase is ready.
 
   UI          ${MB_URL}
   Admin       ${MB_ADMIN_EMAIL}
-  Warehouse   '${WAREHOUSE_MB_NAME}' (id ${DB_ID}) -> databases raw_pylon, analytics, ops
+  Warehouse   '${WAREHOUSE_MB_NAME}' (id ${DB_ID}) -> ops, and raw_<source> per connected source
 
 Next: make smoke
 EOF

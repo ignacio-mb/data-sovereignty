@@ -1,64 +1,87 @@
 # ingest-runtime
 
-Pylon → Postgres ingestion, built on [dlt](https://dlthub.com) 1.x.
+Spec-driven ingestion into ClickHouse, built on [dlt](https://dlthub.com) 1.x.
 
 ```
-Pylon API ──ingest (merge on id)──▶ warehouse, schema raw_pylon
-                                      issues, issue_messages,
-                                      accounts, users, teams, contacts
+any REST API ──ingest (merge on the spec's primary key)──▶ ClickHouse, database raw_<source>
 ```
 
-Adapted from a production Pylon → ClickHouse pipeline. The API handling — cursor
-pagination, per-endpoint rate pacing, HTML stripping, soft deletes — is
-unchanged; the destination and dataset naming are not.
+**Nothing here is API-specific.** A connector is `sources/<name>.yml`: what the
+endpoints are, how they page, which fields are timestamps, what is incremental, when
+it runs, and what "arrived correctly" means. The runtime turns that into dlt column
+hints, a rate-limit pacer, a record transformer and a REST source.
+`.claude/skills/add-source/reference/pylon.yml` is a complete worked example.
 
-## Two fetch strategies, one table
+The repo ships with no specs, so a fresh checkout ingests nothing.
 
-**Incremental** (default, hourly). `POST /issues/search` filtered on `updated_at`
-after the stored cursor, minus a one-hour lookback. Merge on `id` makes the
-overlap idempotent. This is the steady-state path and it never re-scans history.
+## Three fetch strategies
 
-**Window** (`--start`, optional `--end`). `GET /issues` with `start_time` /
-`end_time`. The API caps windows at 30 days and filters on **`created_at` only**,
-so this answers "issues created in [start, end)" and will miss an old issue
-updated inside the window. That constraint is why incremental mode exists — do
-not collapse the two into one path.
+Strategies are code rather than configuration because each is an algorithm, not a
+setting.
 
-`issue_messages` has no cursor. Its worklist is a warehouse watermark: issues
-whose `latest_message_time` is newer than the newest message already loaded. The
-worklist is passed in as a callable so it is evaluated at extract time, after the
-issues from this same run have landed.
+**`full_refresh`** pulls the whole collection every run and merges on the key. Right
+for small entity sets, and the only strategy under which absence is meaningful —
+which is what makes soft-delete reconciliation possible. **It is also the one the
+declarative layer builds by itself**, so a spec using only `full_refresh` needs no
+Python at all.
+
+**`search_window`** is an incremental cursor over a filterable field, with a separate
+windowed endpoint for backfill. Needed when an API filters its list endpoint on
+creation time but offers a search endpoint filtering on update time — the two answer
+different questions, and using the wrong one silently misses rows.
+
+**`parent_watermark`** covers the case where no cross-entity endpoint exists, so the
+worklist comes from the warehouse: children whose parent changed more recently than
+the newest child already loaded. It is evaluated at extract time, after this run's
+parents have landed.
+
+The last two are **not** built declaratively: a spec declaring one must also declare
+an `extensions:` module and supply the Python that fetches it. `build_source` raises
+rather than skipping the resource — a connector that quietly drops an endpoint looks
+exactly like one whose source has no data.
 
 ## Usage
 
 ```bash
-uv run pylon ingest                                      # incremental
-uv run pylon ingest --start 2026-01-01 --end 2026-02-01  # backfill a window
-uv run pylon ingest --destination duckdb --sample 3      # local smoke test
+uv run ingest sources                                              # what is connected
+uv run ingest run --source <name>                                  # incremental
+uv run ingest run --source <name> --start 2026-01-01 --end 2026-02-01
+uv run ingest run --source <name> --destination duckdb --sample 3  # local smoke test
 ```
 
-While the stack is up, ingest through Airflow (`make ingest`) rather than
-directly: a pool of one serializes runs, and two concurrent runs would race the
-incremental cursor. The duckdb destination is always safe — it uses a separate
-dlt pipeline name and cannot touch production state.
+Whether `--start/--end` filters on creation or update time is a property of the API
+and is written in the spec — read it before promising what a backfill covers.
+
+While the stack is up, ingest through Airflow (`make ingest SOURCE=<name>`) rather
+than directly: each source has a pool of one, and two concurrent runs would race its
+incremental cursor. The duckdb destination is always safe — separate dlt pipeline
+name, so it cannot touch production state.
 
 ## Things that will bite you
 
-- **`--mark-deleted` tombstones anything absent from the run's loads.** For
-  `issues` it is only eligible when the run covered the full history
-  (`--start <= 2019-01-01` and an end at roughly now); the guard lives in
-  `cli.py`, and `test_incremental_run_never_soft_deletes_issues` protects it.
-- **Directory resources merge rather than replace** on purpose. Replacing would
-  delete the very rows the soft-delete pass needs to find.
-- **A crashed run leaves a pending load package.** `pipeline.run(source)` would
-  load *that* package and return without extracting, silently skipping the
-  fetch. The CLI drains it first and excludes its load id from the soft-delete.
-- **Nested JSON is stringified, not exploded.** `max_table_nesting=0` plus an
-  explicit promotion list means a new Pylon custom field can never mint a
-  surprise column or child table. Extract the hot ones in the `base_` transforms.
+- **`--mark-deleted` tombstones anything absent from the run's loads.** A resource
+  marked `soft_delete: full_history` is only eligible when the run covered all of
+  history — `--start` at or before the spec's `backfill_start`, and an end at roughly
+  now. `soft_delete: always` resources are eligible every run because they are fully
+  re-fetched. The guard lives in `cli.py`; applying `always` to a resource that is
+  only ever fetched incrementally would tombstone everything outside the window.
+- **A crashed run leaves a pending load package.** `pipeline.run(source)` would load
+  *that* package and return without extracting, silently skipping this run's fetch.
+  The CLI drains it first and excludes its load id from the soft-delete.
+- **Nested JSON is stringified, not exploded.** `max_table_nesting=0` plus the spec's
+  explicit `promote` list means a new custom field upstream can never mint a surprise
+  column or child table. Promote the ones you need, by name.
+- **Rate limits only apply if the pacer reaches the request path.** `build_source`
+  takes `paced=` and installs a session that waits on the spec's `rate_limits` before
+  each request. Constructing an `EndpointPacer` and not passing it paces nothing —
+  and looks fine, because the run summary still reports its (empty) counters.
+- **The database must exist before dlt connects.** ClickHouse selects it while
+  connecting, so `ensure_database` runs first; `warehouse/init/` cannot cover it
+  because that only runs once, on an empty volume.
 
 ## Tests
 
-`uv run pytest` from the repo root. Everything is mocked through
-`requests-mock`; no network, no credentials. The end-to-end tests drive the real
-Click CLI into duckdb inside a tmp directory.
+`uv run pytest` from the repo root. Everything is mocked through `requests-mock`; no
+network, no credentials. `test_build_source.py` drives a spec with no Python end to
+end into duckdb — two pages, so the paginator is genuinely exercised — which is what
+licenses the runtime having no per-API code in it.

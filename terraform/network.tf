@@ -1,7 +1,7 @@
 # A dedicated VPC with one public subnet and a security group that has no
 # ingress rules at all.
 #
-# The instance needs outbound HTTPS — the Pylon API, GitHub, Docker Hub, npm,
+# The instance needs outbound HTTPS — the source APIs you connect, GitHub, Docker Hub,
 # PyPI, and Metabase's licence check — and needs nothing inbound. Security
 # groups are stateful, so "no ingress rules" means replies to the instance's
 # own connections still arrive while nothing on the internet can open one.
@@ -101,7 +101,7 @@ resource "aws_security_group" "instance" {
 # ingress rule added by mistake still would not expose them.
 resource "aws_vpc_security_group_egress_rule" "all" {
   security_group_id = aws_security_group.instance.id
-  description       = "Pylon API, GitHub, container registries, PyPI, npm, AWS APIs"
+  description       = "Source APIs, GitHub, container registries, PyPI, npm, AWS APIs"
   ip_protocol       = "-1"
   cidr_ipv4         = "0.0.0.0/0"
 }

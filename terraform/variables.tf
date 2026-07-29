@@ -38,7 +38,7 @@ variable "existing_subnet_id" {
 
     The subnet must be able to reach the internet — an internet gateway route
     with a public IP, or a NAT gateway. The instance pulls container images and
-    calls the Pylon API; without egress the stack cannot work.
+    calls the source APIs you connect; without egress the stack cannot work.
   EOT
   type        = string
   default     = ""

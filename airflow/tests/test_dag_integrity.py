@@ -116,6 +116,34 @@ class TestGeneratedDags:
             if "record_ops" in dag.task_ids:
                 assert dag.get_task("record_ops").trigger_rule == TriggerRule.ALL_DONE, dag_id
 
+    def test_a_failed_task_turns_every_generated_run_red(self, connected_bag):
+        """Airflow derives dag_run state from leaf tasks alone.
+
+        record_ops is ALL_DONE and its command cannot fail — a missing summary is
+        an echo and exit 0 — so wherever it is the only leaf, the run reports
+        success no matter what broke upstream. That is not hypothetical: ingest
+        once died on a missing API key three hours running while the DAG called it
+        green. Asserted for EVERY generated DAG rather than the hourly one,
+        because the generator grew the backfill and reconcile DAGs without a
+        verdict and only the hourly one was being checked.
+        """
+        from airflow.task.trigger_rule import TriggerRule
+
+        for dag_id in connected_bag.dag_ids:
+            dag = connected_bag.dags[dag_id]
+            if "record_ops" not in dag.task_ids:
+                continue  # stack_smoke records nothing
+            leaves = [task for task in dag.tasks if not task.downstream_task_ids]
+            assert [task.task_id for task in leaves] == ["run_verdict"], (
+                f"{dag_id}: the run's verdict must come from one task that "
+                f"reflects real failures, not from record_ops"
+            )
+            assert leaves[0].trigger_rule == TriggerRule.NONE_FAILED, dag_id
+            # A verdict hanging off record_ops alone would inherit the same lie:
+            # trigger rules look at direct upstream tasks only.
+            assert leaves[0].upstream_task_ids - {"record_ops"}, \
+                f"{dag_id}: the verdict must depend on the real work too"
+
     def test_every_fetch_writes_the_summary_the_recorder_reads(self, connected_bag):
         """record_ops records nothing unless the fetch was asked for a summary.
 

@@ -298,6 +298,6 @@ deploy target: `make hold` before anything that would be undone by a merge.
 
 **Schema evolution.** dlt writes the inferred schema to
 `/opt/dlt-state/schemas` on the instance rather than into the checkout, so an
-ingest cannot dirty the deploy target. When the Pylon API grows a field, the
+ingest cannot dirty the deploy target. When a source API grows a field, the
 diff to review comes from a local `ingest run --destination duckdb` run, and
 lands through a PR like anything else.

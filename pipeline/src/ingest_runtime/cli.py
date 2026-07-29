@@ -161,7 +161,7 @@ def run(source_name, start, end, resources_csv, mode, mark_deleted_flag, sample_
     # is a warehouse query must extract AFTER its parents are loaded, or it lags a
     # run behind. build_source returns the declarative resources first for exactly
     # that reason.
-    for source in build_source(spec, selected=selected, extension=extensions(spec)):
+    for source in build_source(spec, selected=selected, extension=extensions(spec), paced=paced):
         run_phase(source)
 
     if mark_deleted_flag:
