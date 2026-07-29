@@ -17,7 +17,7 @@ log = logging.getLogger(__name__)
 # find the directory, and Airflow workers run from an arbitrary cwd. Tests point
 # the override at a tmp dir so they never write into the repo.
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
-SCHEMA_DIR_ENV = "PYLON_SCHEMA_DIR"
+SCHEMA_DIR_ENV = "DS_SCHEMA_DIR"
 
 # dlt reads its destination credentials from the environment. The database is
 # the one credential that differs per source, so it is set here at build time

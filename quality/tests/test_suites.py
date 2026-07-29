@@ -4,8 +4,8 @@ import types
 
 import pytest
 import yaml
-from pylon_quality import config, results
-from pylon_quality.suites import marts, raw_pylon
+from quality_runtime import config, results
+from quality_runtime.suites import marts, raw_pylon
 
 
 def expectation_types(expectations):

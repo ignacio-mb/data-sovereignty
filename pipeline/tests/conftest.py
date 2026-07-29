@@ -11,9 +11,9 @@ import json
 
 import pytest
 
-from pylon_pipeline.ingest.client import PylonClient
-from pylon_pipeline.ingest.pacing import EndpointPacer
-from pylon_pipeline.ingest.settings import RATE_LIMITS
+from ingest_runtime.ingest.client import PylonClient
+from ingest_runtime.ingest.pacing import EndpointPacer
+from ingest_runtime.ingest.settings import RATE_LIMITS
 
 API = "https://api.usepylon.com"
 
@@ -139,7 +139,7 @@ def client(pylon_api, fast_pacer):
 def isolated_dlt(tmp_path, monkeypatch):
     """Run dlt fully inside tmp_path: working dir, duckdb file, schema export."""
     monkeypatch.setenv("DLT_DATA_DIR", str(tmp_path / "dlt_data"))
-    monkeypatch.setenv("PYLON_SCHEMA_DIR", str(tmp_path / "schemas"))
+    monkeypatch.setenv("DS_SCHEMA_DIR", str(tmp_path / "schemas"))
     (tmp_path / "schemas" / "export").mkdir(parents=True)
     monkeypatch.chdir(tmp_path)
     return tmp_path

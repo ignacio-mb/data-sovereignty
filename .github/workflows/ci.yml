@@ -138,7 +138,7 @@ jobs:
       - name: The CLIs are all on PATH
         run: |
           docker compose --profile cli run --rm airflow-cli \
-            bash -c 'pylon --help >/dev/null && dq --help >/dev/null \
+            bash -c 'ingest --help >/dev/null && dq --help >/dev/null \
                      && mbx --help >/dev/null && mb --version >/dev/null'
 
       - name: The ops schema builds against a real Postgres

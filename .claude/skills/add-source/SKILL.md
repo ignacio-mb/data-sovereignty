@@ -73,7 +73,7 @@ Write `sources/<name>.yml`. Read `sources/pylon.yml` first — it is the referen
 connector and its comments explain why each field exists. Then:
 
 ```bash
-uv run python -c "from pylon_pipeline import spec; print(spec.load('<name>'))"
+uv run python -c "from ingest_runtime import spec; print(spec.load('<name>'))"
 ```
 
 The loader rejects unknown keys, unknown incremental strategies, a bare `true`

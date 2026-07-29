@@ -76,7 +76,7 @@ docker compose logs --tail=80 <service>
   `token` in the logs.
 - **Airflow containers restart-looping** — check `airflow-init` completed:
   `docker compose logs airflow-init`. It runs the DB migration and creates the
-  `pylon_pipeline` pool; everything else waits on it.
+  `ingest_runtime` pool; everything else waits on it.
 - **A Postgres container is healthy but Metabase cannot reach it** — the app is
   configured with the *service* name (`warehouse-db:5432`), not localhost. If
   someone edited `.env` to fix a host-side connection, they may have broken the

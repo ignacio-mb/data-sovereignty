@@ -19,7 +19,7 @@ docs at http://localhost:8081.
 
 ## Where expectations come from
 
-**Raw** — hand-written in `quality/src/pylon_quality/suites/raw_pylon.py`.
+**Raw** — hand-written in `quality/src/quality_runtime/suites/raw_pylon.py`.
 Identity (`id` unique and present), freshness, tombstone sanity, and referential
 checks between children and parents.
 

@@ -2,7 +2,7 @@ from itertools import pairwise
 
 import pendulum
 
-from pylon_pipeline.ingest.issues import iter_windows, rfc3339
+from ingest_runtime.ingest.issues import iter_windows, rfc3339
 
 
 def test_iter_windows_caps_at_30_days_and_handles_partial_tail():
