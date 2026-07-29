@@ -3091,6 +3091,7 @@ dependencies = [
     { name = "dlt", extra = ["clickhouse"] },
     { name = "pendulum" },
     { name = "python-dotenv" },
+    { name = "pyyaml" },
 ]
 
 [package.dev-dependencies]
@@ -3108,6 +3109,7 @@ requires-dist = [
     { name = "dlt", extras = ["clickhouse"], specifier = ">=1.28.1,<2" },
     { name = "pendulum", specifier = ">=3.0" },
     { name = "python-dotenv", specifier = ">=1.0" },
+    { name = "pyyaml", specifier = ">=6" },
 ]
 
 [package.metadata.requires-dev]

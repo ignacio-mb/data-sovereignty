@@ -1,0 +1,232 @@
+"""The source contract: `sources/<name>.yml` loaded and validated.
+
+One file defines a connector — what to call, how to page it, what is
+incremental, when it runs, and what "correct" means for the tables it lands.
+Nothing about any particular API is compiled into the runtime.
+
+Validation is strict about unknown keys on purpose. A misspelled `time_stamp_columns`
+that is silently ignored produces a connector that runs, looks healthy, and
+lands untyped strings — the class of failure this stack exists to catch. An
+unknown key is a typo until proven otherwise, so it raises.
+"""
+
+from __future__ import annotations
+
+import os
+from pathlib import Path
+
+import yaml
+
+# sources/ sits beside pipeline/, at the repo root: this file is
+# pipeline/src/pylon_pipeline/spec.py, so three parents up is `pipeline/`.
+REPO_ROOT = Path(__file__).resolve().parents[3]
+SOURCES_DIR_ENV = "DS_SOURCES_DIR"
+
+_TOP_LEVEL = {
+    "name", "display_name", "docs_url", "api", "rate_limits", "orchestration",
+    "resources", "pagination", "quality", "extensions",
+}
+_RESOURCE_KEYS = {
+    "name", "primary_key", "write_disposition", "soft_delete", "endpoint",
+    "incremental", "timestamp_columns", "promote", "html_text",
+}
+_QUALITY_KEYS = {
+    "required", "freshness", "max_deleted_fraction", "references", "not_null",
+}
+
+# Strategies the runtime knows how to build. Adding one is a code change, which
+# is the point: a strategy is a fetch algorithm, not a setting.
+_STRATEGIES = {"search_window", "parent_watermark", "full_refresh"}
+
+
+class SpecError(ValueError):
+    """A source spec that cannot be trusted to describe a connector."""
+
+
+def sources_dir():
+    override = os.environ.get(SOURCES_DIR_ENV, "").strip()
+    return Path(override) if override else REPO_ROOT / "sources"
+
+
+def available():
+    """Source names with a spec on disk, sorted."""
+    directory = sources_dir()
+    if not directory.is_dir():
+        return []
+    return sorted(path.stem for path in directory.glob("*.yml"))
+
+
+def load(name, directory=None):
+    """Parse and validate `sources/<name>.yml` into a Spec."""
+    path = (Path(directory) if directory else sources_dir()) / f"{name}.yml"
+    if not path.is_file():
+        known = ", ".join(available()) or "none"
+        raise SpecError(f"no source spec at {path} (known sources: {known})")
+    try:
+        document = yaml.safe_load(path.read_text())
+    except yaml.YAMLError as error:
+        raise SpecError(f"{path} is not valid YAML: {error}") from error
+    if not isinstance(document, dict):
+        raise SpecError(f"{path} must be a mapping, got {type(document).__name__}")
+    return Spec(document, path)
+
+
+def _reject_unknown(where, got, allowed):
+    unknown = sorted(set(got) - allowed)
+    if unknown:
+        raise SpecError(
+            f"{where}: unknown key(s) {', '.join(unknown)}. "
+            f"Allowed: {', '.join(sorted(allowed))}"
+        )
+
+
+def _require(where, mapping, *keys):
+    missing = [key for key in keys if not mapping.get(key)]
+    if missing:
+        raise SpecError(f"{where}: missing required key(s) {', '.join(missing)}")
+
+
+class Resource:
+    """One endpoint's worth of the contract."""
+
+    def __init__(self, entry, source_name):
+        where = f"{source_name}.resources[{entry.get('name', '?')}]"
+        if not isinstance(entry, dict):
+            raise SpecError(f"{source_name}: each resource must be a mapping")
+        _reject_unknown(where, entry, _RESOURCE_KEYS)
+        _require(where, entry, "name", "primary_key")
+        self._entry = entry
+        self._where = where
+
+        strategy = self.incremental.get("strategy", "full_refresh")
+        if strategy not in _STRATEGIES:
+            raise SpecError(
+                f"{where}: unknown incremental strategy {strategy!r}. "
+                f"Known: {', '.join(sorted(_STRATEGIES))}"
+            )
+        self.strategy = strategy
+
+    name = property(lambda self: self._entry["name"])
+    primary_key = property(lambda self: self._entry["primary_key"])
+    endpoint = property(lambda self: self._entry.get("endpoint") or {})
+    incremental = property(lambda self: self._entry.get("incremental") or {})
+    promote = property(lambda self: self._entry.get("promote") or {})
+    html_text = property(lambda self: self._entry.get("html_text") or {})
+    soft_delete = property(lambda self: bool(self._entry.get("soft_delete")))
+
+    @property
+    def write_disposition(self):
+        return self._entry.get("write_disposition", "merge")
+
+    @property
+    def timestamp_columns(self):
+        return tuple(self._entry.get("timestamp_columns") or ())
+
+    @property
+    def family(self):
+        """Rate-limit family. Defaults to the resource's own name, so a source
+        that does not group its endpoints gets one budget each."""
+        return self.endpoint.get("family") or self.name
+
+    def __repr__(self):
+        return f"<Resource {self.name} strategy={self.strategy}>"
+
+
+class Spec:
+    """A validated source definition."""
+
+    def __init__(self, document, path):
+        self.path = path
+        _reject_unknown(str(path), document, _TOP_LEVEL)
+        _require(str(path), document, "name", "api", "resources")
+        self._doc = document
+
+        api = document["api"]
+        _require(f"{self.name}.api", api, "base_url", "auth")
+        _require(f"{self.name}.api.auth", api["auth"], "type", "token_env")
+
+        if not isinstance(document["resources"], list) or not document["resources"]:
+            raise SpecError(f"{self.name}: `resources` must be a non-empty list")
+        self.resources = [Resource(entry, self.name) for entry in document["resources"]]
+
+        names = [resource.name for resource in self.resources]
+        duplicates = sorted({n for n in names if names.count(n) > 1})
+        if duplicates:
+            raise SpecError(f"{self.name}: duplicate resource name(s) {', '.join(duplicates)}")
+
+        _reject_unknown(f"{self.name}.quality", self.quality, _QUALITY_KEYS)
+        self._validate_references()
+
+    name = property(lambda self: self._doc["name"])
+    display_name = property(lambda self: self._doc.get("display_name") or self._doc["name"])
+    api = property(lambda self: self._doc["api"])
+    base_url = property(lambda self: self._doc["api"]["base_url"])
+    rate_limits = property(lambda self: dict(self._doc.get("rate_limits") or {}))
+    orchestration = property(lambda self: dict(self._doc.get("orchestration") or {}))
+    pagination = property(lambda self: dict(self._doc.get("pagination") or {}))
+    quality = property(lambda self: dict(self._doc.get("quality") or {}))
+    extensions = property(lambda self: self._doc.get("extensions"))
+
+    @property
+    def token_env(self):
+        return self._doc["api"]["auth"]["token_env"]
+
+    @property
+    def dataset(self):
+        """The warehouse database these tables land in.
+
+        Derived, never configurable: `raw_<source>` keeps every source's blast
+        radius its own, and a spec that could name it something else invites two
+        sources sharing one database and one soft-delete pass.
+        """
+        return f"raw_{self.name}"
+
+    @property
+    def pool(self):
+        return self.orchestration.get("pool") or f"{self.name}_pipeline"
+
+    @property
+    def backfill_start(self):
+        return self.orchestration.get("backfill_start")
+
+    def resource(self, name):
+        for resource in self.resources:
+            if resource.name == name:
+                return resource
+        raise SpecError(f"{self.name}: no resource named {name!r}")
+
+    @property
+    def resource_names(self):
+        return tuple(resource.name for resource in self.resources)
+
+    @property
+    def soft_delete_tables(self):
+        return tuple(r.name for r in self.resources if r.soft_delete)
+
+    def timeout_minutes(self, task, default):
+        return int((self.orchestration.get("timeouts_minutes") or {}).get(task, default))
+
+    def _validate_references(self):
+        """Referential edges must name resources this spec actually declares.
+
+        Checked here rather than at query time: a typo'd parent surfaces as a
+        LEFT ANTI JOIN against a table that does not exist, which reads as a
+        broken warehouse rather than a broken spec.
+        """
+        known = set(self.resource_names)
+        for edge in self.quality.get("references") or []:
+            for side in ("child", "parent"):
+                value = edge.get(side)
+                if not value or "." not in str(value):
+                    raise SpecError(
+                        f"{self.name}.quality.references: {side} must be 'table.column', got {value!r}"
+                    )
+                table = str(value).split(".", 1)[0]
+                if table not in known:
+                    raise SpecError(
+                        f"{self.name}.quality.references: {side} names table {table!r}, "
+                        f"which is not a resource in this spec ({', '.join(sorted(known))})"
+                    )
+
+    def __repr__(self):
+        return f"<Spec {self.name} resources={len(self.resources)}>"
