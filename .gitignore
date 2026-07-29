@@ -40,3 +40,4 @@ docker/airflow/vendor/*.tgz
 .ingest.log
 .build.log
 .ingest2.log
+.dagtest.log
