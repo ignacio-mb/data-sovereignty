@@ -13,6 +13,10 @@ resource "aws_ebs_volume" "data" {
   size              = var.data_volume_gb
   type              = "gp3"
   encrypted         = true
+  # prevent_destroy below already refuses a destroy. This is for the day
+  # someone removes that deliberately: the last thing the volume does on its
+  # way out is leave a snapshot behind.
+  final_snapshot = true
 
   tags = {
     Name = "${var.project}-data"

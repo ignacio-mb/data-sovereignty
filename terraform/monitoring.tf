@@ -84,7 +84,12 @@ resource "aws_cloudwatch_metric_alarm" "data_disk" {
   evaluation_periods  = 2
   threshold           = var.data_disk_alarm_threshold
   comparison_operator = "GreaterThanThreshold"
-  treat_missing_data  = "notBreaching"
+  # An agent that has stopped publishing is itself worth an email — with
+  # notBreaching, a dead agent and a healthy disk look identical, and the alarm
+  # stays green forever. Expect one alarm-then-OK cycle at first boot, in the
+  # window before the agent's first datapoint; that is the alarm path proving
+  # itself.
+  treat_missing_data = "breaching"
 
   dimensions = {
     InstanceId = aws_instance.main.id
@@ -106,7 +111,8 @@ resource "aws_cloudwatch_metric_alarm" "memory" {
   evaluation_periods  = 3
   threshold           = 92
   comparison_operator = "GreaterThanThreshold"
-  treat_missing_data  = "notBreaching"
+  # Same reasoning as the disk alarm: silence is not health.
+  treat_missing_data = "breaching"
 
   dimensions = { InstanceId = aws_instance.main.id }
 

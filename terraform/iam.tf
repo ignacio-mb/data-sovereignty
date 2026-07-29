@@ -40,6 +40,23 @@ data "aws_iam_policy_document" "instance" {
     resources = ["arn:aws:ssm:${var.region}:${data.aws_caller_identity.current.account_id}:parameter${var.ssm_parameter_prefix}/*"]
   }
 
+  # The agent's config deliberately lives OUTSIDE the secrets prefix, so it
+  # needs a grant of its own. Do not "tidy" it under the prefix instead:
+  # scripts/render_env_from_ssm.sh writes every direct child of that path into
+  # .env, and this parameter is several hundred bytes of JSON.
+  #
+  # CloudWatchAgentServerPolicy does not cover it either — that policy's
+  # ssm:GetParameter is scoped to parameter/AmazonCloudWatch-*. Without this,
+  # the agent cannot fetch its config at boot, never publishes a datapoint, and
+  # the disk and memory alarms below are green because nothing ever arrives.
+  dynamic "statement" {
+    for_each = var.enable_cloudwatch_agent ? [1] : []
+    content {
+      sid       = "ReadCloudWatchAgentConfig"
+      actions   = ["ssm:GetParameter"]
+      resources = ["arn:aws:ssm:${var.region}:${data.aws_caller_identity.current.account_id}:parameter${local.cw_agent_parameter_name}"]
+    }
+  }
 }
 
 resource "aws_iam_role_policy" "instance" {
