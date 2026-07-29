@@ -30,11 +30,15 @@ resource "aws_ebs_volume" "data" {
 }
 
 resource "aws_instance" "main" {
-  ami                    = var.ami_id != "" ? var.ami_id : data.aws_ssm_parameter.ubuntu.value
-  instance_type          = var.instance_type
-  subnet_id              = aws_subnet.main.id
-  vpc_security_group_ids = [aws_security_group.instance.id]
-  iam_instance_profile   = aws_iam_instance_profile.instance.name
+  ami           = var.ami_id != "" ? var.ami_id : data.aws_ssm_parameter.ubuntu.value
+  instance_type = var.instance_type
+  subnet_id     = local.subnet_id
+  # Needed in a public subnet whose route out is an internet gateway; leave it
+  # off behind a NAT. Nothing can connect in either way — the security group
+  # has no ingress rules.
+  associate_public_ip_address = var.associate_public_ip
+  vpc_security_group_ids      = [aws_security_group.instance.id]
+  iam_instance_profile        = aws_iam_instance_profile.instance.name
 
   metadata_options {
     http_endpoint = "enabled"

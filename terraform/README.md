@@ -8,7 +8,7 @@ and keeping it there.
 
 | | |
 |---|---|
-| VPC | `10.20.0.0/24`, one public subnet, internet gateway. Security group with **no ingress rules** — egress only. |
+| Network | Either a dedicated VPC (`10.20.0.0/24`, one public subnet, internet gateway) or an existing subnet via `existing_subnet_id`. Security group with **no ingress rules** either way. |
 | Instance | `m8g.xlarge` (Graviton, 4 vCPU / 16 GB), Ubuntu 24.04 arm64, IMDSv2 with a one-hop limit so containers cannot reach the instance role. |
 | Storage | 20 GB root (OS + swapfile) and a 100 GB gp3 volume at `/data` holding Docker's data-root, the repo and `.env`. |
 | Backups | DLM: daily snapshots kept 14 days, weekly kept 4 weeks. |
@@ -16,6 +16,33 @@ and keeping it there.
 | CD | GitHub OIDC role and an SSM document, so a merge to `main` deploys. |
 
 Roughly **$145/month** on demand, about $106 with a one-year savings plan.
+
+## Which network
+
+Two shapes, and the choice is usually made for you.
+
+**A dedicated VPC** is the default: `terraform apply` builds the VPC, a public
+subnet, an internet gateway and a route table. Nothing can connect in, because
+the security group has no ingress rules.
+
+**An existing subnet** is what you get on a shared account, which commonly
+denies `ec2:CreateVpc` outright. Set `existing_subnet_id`; the VPC, subnet,
+gateway and route table are then skipped, the security group is still created
+here with no ingress rules, and the availability zone follows the subnet — so
+`availability_zone` is ignored.
+
+Whichever subnet you pick must reach the internet: the instance pulls container
+images and calls the source APIs. Prefer a **private subnet behind a NAT
+gateway** if one exists, with `associate_public_ip = false`. Then the instance
+has no public address at all rather than a public address with everything
+blocked — invisible to scanners, and still private even if someone later adds
+an ingress rule by mistake. SSM is outbound-only, so shells and tunnels work
+exactly the same. The only reason the built-in VPC uses a public subnet is to
+avoid paying for a NAT gateway; if the account already has one, that trade-off
+does not apply to you.
+
+To find the candidates in a given AZ, and whether each can actually reach the
+internet, see `docs/deploy.md`.
 
 ## One-time setup
 
