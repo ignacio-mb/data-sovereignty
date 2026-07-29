@@ -40,7 +40,7 @@ DEFAULT_ARGS = {
 }
 
 
-# Duplicated from pylon_pipeline.ingest.settings rather than imported: DAGs
+# Duplicated from ingest_runtime.ingest.settings rather than imported: DAGs
 # shell out and never import the pipeline packages, which live in a separate
 # virtualenv. test_dag_integrity asserts the two stay equal — the test may
 # import what the DAG may not.
@@ -54,7 +54,7 @@ def ingest_command(extra_args=""):
     """
     return (
         "set -euo pipefail\n"
-        f"pylon ingest --destination {PRODUCTION_DESTINATION} --summary-json '{SUMMARY_PATH}' {extra_args}\n"
+        f"ingest run --destination {PRODUCTION_DESTINATION} --summary-json '{SUMMARY_PATH}' {extra_args}\n"
     )
 
 

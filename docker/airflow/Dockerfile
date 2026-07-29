@@ -81,10 +81,10 @@ RUN set -eux; \
     uv sync --frozen --no-dev; \
     apt-get purge -y --auto-remove gcc python3-dev libc6-dev; \
     rm -rf /var/lib/apt/lists/*; \
-    for tool in pylon dq mbx; do ln -sf /opt/data-venv/bin/$tool /usr/local/bin/$tool; done; \
+    for tool in ingest dq mbx; do ln -sf /opt/data-venv/bin/$tool /usr/local/bin/$tool; done; \
     chown -R airflow:0 /opt/data-venv /opt/project
 
 USER airflow
 
 # Fail fast at build time rather than in a DAG task at 03:00.
-RUN pylon --help >/dev/null && dq --help >/dev/null && mbx --help >/dev/null && mb --version >/dev/null
+RUN ingest --help >/dev/null && dq --help >/dev/null && mbx --help >/dev/null && mb --version >/dev/null

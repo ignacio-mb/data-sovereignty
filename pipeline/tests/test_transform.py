@@ -1,7 +1,7 @@
 import json
 from datetime import datetime
 
-from pylon_pipeline.ingest.transform import enrich_message, flatten_issue, strip_html
+from ingest_runtime.ingest.transform import enrich_message, flatten_issue, strip_html
 from tests.conftest import issue
 
 

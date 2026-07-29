@@ -2,7 +2,7 @@ SHELL := /usr/bin/env bash
 .DEFAULT_GOAL := help
 
 COMPOSE := docker compose
-# Run one-off commands in the Airflow image: it has pylon, dq, mbx and mb on PATH.
+# Run one-off commands in the Airflow image: it has ingest, dq, mbx and mb on PATH.
 RUN := $(COMPOSE) --profile cli run --rm airflow-cli
 
 .PHONY: help env up down nuke bootstrap ingest backfill quality docs status logs ch \
@@ -22,7 +22,7 @@ env: ## Create .env from .env.example and generate Airflow secrets
 	@bash scripts/gen_secrets.sh .env
 	@echo "Now fill in PYLON_API_KEY, MB_PREMIUM_EMBEDDING_TOKEN and MB_ADMIN_PASSWORD."
 
-build: ## Build the Airflow image (pylon + dq + mbx + mb)
+build: ## Build the Airflow image (ingest + dq + mbx + mb)
 	$(COMPOSE) build
 
 # Where your mb-cli working copy lives. Only used by mb-cli-local.

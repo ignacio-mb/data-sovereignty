@@ -48,7 +48,7 @@ Then: add the member to the root `pyproject.toml`, symlink its console script in
 
 ## The four patterns worth carrying over verbatim
 
-**`EndpointPacer`** (`pipeline/src/pylon_pipeline/ingest/pacing.py`) — space
+**`EndpointPacer`** (`pipeline/src/ingest_runtime/ingest/pacing.py`) — space
 requests proactively per endpoint family rather than hammering until a 429.
 Thirty lines, no dependencies, source-agnostic. Copy it as is.
 
@@ -69,16 +69,16 @@ end-to-end CLI tests worth running.
 
 Adding a source is not finished when data lands:
 
-- **Quality** — a new suite module in `quality/src/pylon_quality/suites/`, and a
+- **Quality** — a new suite module in `quality/src/quality_runtime/suites/`, and a
   checkpoint name in `cli.py`. Identity, freshness and referential checks.
 - **Modeling** — `base_<source>_*` transforms, then conform into the existing
   `dim_*` where the entities overlap. Two sources describing the same accounts
   is the interesting case and the reason `dim_account` exists.
-- **The pool** — reuse `pylon_pipeline` only if the sources share a rate limit
+- **The pool** — reuse `ingest_runtime` only if the sources share a rate limit
   budget. Otherwise give the new source its own pool so one slow backfill does
   not block the other's hourly run.
 
 ## Rename first
 
-If a second source is going in, `pylon_quality` and the `pylon_pipeline` pool
+If a second source is going in, `quality_runtime` and the `ingest_runtime` pool
 become misnomers. Renaming is cheap now and annoying later.
