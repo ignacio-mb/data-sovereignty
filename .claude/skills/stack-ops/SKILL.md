@@ -15,9 +15,17 @@ make env
 Then check which required secrets are still blank — **without printing their
 values**:
 
+Every connected source needs its own token, so derive the list from the specs
+rather than hardcoding one API's variable:
+
 ```bash
-grep -E '^(PYLON_API_KEY|MB_PREMIUM_EMBEDDING_TOKEN|MB_ADMIN_PASSWORD)=' .env \
-  | sed -E 's/=(.+)/= [set]/'
+# each source's token var, plus the two the platform itself needs
+{ grep -h 'token_env:' sources/*.yml | awk '{print $2}'; \
+  echo MB_PREMIUM_EMBEDDING_TOKEN; echo MB_ADMIN_PASSWORD; } \
+| while read -r key; do
+    printf '%s = %s\n' "$key" \
+      "$(grep -qE "^${key}=.+" .env && echo '[set]' || echo 'MISSING')"
+  done
 ```
 
 Anything showing `=` with nothing after it needs the user. Ask for all missing
