@@ -18,6 +18,7 @@ procedures.
 | `airflow/dags/` | Four DAGs; all shell out, none import the packages |
 | `docs/` | Stop-gate deliverables from modeling |
 | `warehouse/init/` | Runs once, on first init of an empty volume |
+| `terraform/` | The AWS host. `docs/deploy.md` is the runbook. |
 
 The three Python packages are uv workspace members sharing one environment, so
 `pylon`, `dq` and `mbx` are always installed together.
@@ -80,6 +81,17 @@ cursor. `--destination duckdb` is always safe — separate pipeline name.
 data in the warehouse. Destroy one without the other and the pipeline believes
 it already loaded rows that no longer exist.
 
+**The AWS checkout is a deploy artefact, not a workspace.** Merging to `main`
+resets `/data/data-sovereignty` to it. Nothing the running stack writes may be a
+tracked path — that is why `PYLON_SCHEMA_DIR` points dlt's schema export at the
+`dlt-state` volume. Work on a laptop and merge; `make hold` first if you must
+work on the box. `docs/deploy.md`.
+
+**Non-secret tunables belong in `docker-compose.yml`, not `.env.example`.**
+`.env` is created once and never re-synced, so a value there shadows the compose
+default forever — pinning an image tag in `.env` turns a later bump in git into
+a silent no-op on a long-lived host.
+
 ## Metabase goes through mb-cli
 
 `mb` is the interface to Metabase. Everything in `metabase/src/mb_tools/` shells
@@ -133,6 +145,13 @@ docker compose --profile cli run --rm airflow-cli airflow dags test stack_smoke
 
 DAG tests need Airflow, which is deliberately outside the default environment:
 `uv sync --group dag-tests && uv run pytest airflow/tests`.
+
+The deploy path cannot be exercised on a laptop. What can:
+
+```bash
+terraform -chdir=terraform validate
+docker run --rm -v "$PWD:/mnt" -w /mnt koalaman/shellcheck:stable -S warning scripts/*.sh
+```
 
 ## Conventions
 

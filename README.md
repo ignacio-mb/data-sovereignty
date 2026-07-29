@@ -114,6 +114,17 @@ environment: `uv run --group dag-tests pytest airflow/tests`.
   races the cursor. Use `make ingest`. Local `--destination duckdb` smoke runs
   are safe — they use a separate pipeline name and can't touch production state.
 
+## Running it on AWS
+
+The stack also runs unattended on a single private EC2 instance, and **merging
+to `main` deploys it**: CI gates the merge, GitHub Actions asks SSM to run the
+deploy on the instance, and the result appears as a check on the merge commit.
+Nothing is exposed to the internet — the security group has no ingress rules,
+and the UIs are reached through an SSM tunnel (`make tunnels`).
+
+`terraform/` builds the host; [docs/deploy.md](docs/deploy.md) is the runbook —
+first deploy, day-to-day, rollback, and what to do when the instance is lost.
+
 ## Data quality: gating checks and advisory ones
 
 `dq run` records one row per expectation in `ops.gx_results` and renders data

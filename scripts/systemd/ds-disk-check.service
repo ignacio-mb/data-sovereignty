@@ -1,0 +1,9 @@
+[Unit]
+Description=Report /data usage to the journal
+RequiresMountsFor=/data
+
+[Service]
+Type=oneshot
+User=ubuntu
+WorkingDirectory=/data/data-sovereignty
+ExecStart=/data/data-sovereignty/scripts/disk_check.sh

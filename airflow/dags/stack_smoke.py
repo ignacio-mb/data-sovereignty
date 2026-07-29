@@ -53,10 +53,12 @@ with DAG(
         task_id="metabase",
         # `mb auth status` is the cheapest call that proves both the URL and the
         # API key are right; a missing key exits non-zero rather than hanging.
+        # Its payload identifies the authenticated principal, and task logs are
+        # readable by anyone with the Airflow UI, so only the verdict is kept.
         bash_command=(
             "set -euo pipefail\n"
             'test -n "${MB_API_KEY:-}" || { echo "MB_API_KEY is empty — has bootstrap run?"; exit 1; }\n'
-            "mb auth status --json --max-bytes 0\n"
+            "mb auth status --json --max-bytes 0 > /dev/null && echo 'metabase ok'\n"
         ),
     )
 

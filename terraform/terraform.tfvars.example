@@ -1,0 +1,29 @@
+# Copy to terraform.tfvars (git-ignored) and fill in.
+
+region            = "us-east-1"
+availability_zone = "" # empty picks the first available in the region
+
+# Public half of the key you will use for ssh-over-SSM. Without it you still
+# get SSM shells, but not rsync or `ssh -L` tunnels.
+operator_ssh_public_key = ""
+
+# Alarms: instance recovery, /data above 80%, memory above 92%.
+alarm_email = ""
+
+# Deploy role trust. Numeric, and worth pinning: a repository *name* is
+# released for re-registration after a rename or transfer.
+#   gh api repos/ignacio-mb/data-sovereignty --jq .id
+#   gh api users/ignacio-mb --jq .id
+github_repository_id       = ""
+github_repository_owner_id = ""
+
+# An AWS account may only have one GitHub OIDC provider:
+#   aws iam list-open-id-connect-providers
+create_github_oidc_provider = true
+
+# Reach the tailnet as well as SSM. Needs a SecureString auth key at
+# /data-sovereignty/prod/TAILSCALE_AUTHKEY before the first apply.
+enable_tailscale = false
+
+# 32 GB — step up to this when adding sources, not before.
+# instance_type = "r8g.xlarge"

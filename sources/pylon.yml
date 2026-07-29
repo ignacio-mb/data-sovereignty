@@ -1,0 +1,173 @@
+# Pylon — the reference connector.
+#
+# This file is the whole definition of a source: what to call, how to page it,
+# what is incremental, when it runs, and what "correct" means for the tables it
+# lands. The runtime reads it; nothing about Pylon is compiled into the code.
+#
+# Pylon is deliberately the reference because it is the awkward case. Two of its
+# behaviours cannot be expressed declaratively at all — see `extensions` at the
+# bottom — and a contract that only fits easy APIs would be a contract that
+# breaks on the second connector.
+
+name: pylon
+display_name: Pylon
+docs_url: https://docs.usepylon.com
+
+api:
+  base_url: https://api.usepylon.com
+  auth:
+    type: bearer
+    token_env: PYLON_API_KEY
+  headers:
+    # Pylon caches aggressively at the edge; without this an incremental run can
+    # be served a page that predates the window it just asked for.
+    Cache-Control: no-cache
+
+# Requests per minute, per endpoint family, from the published limits at
+# docs_url. Researched rather than discovered by being 429'd — the pacer spaces
+# requests evenly instead of hammering until it is told to stop.
+#
+# The four directory endpoints each document 60/min and share one family here.
+# That is only safe because they are fetched sequentially; parallelising them
+# would need a family each.
+rate_limits:
+  issues_list: 10
+  issues_search: 20
+  messages: 20
+  directory: 60
+
+orchestration:
+  schedule: "17 * * * *"        # :17 — not on the hour, where every other cron is
+  backfill_start: "2019-01-01"  # also the floor the tombstone guard checks against
+  reconcile: "0 3 * * 6"        # Saturday 03:00 UTC, full history + tombstones
+  pool: pylon_pipeline          # size 1: concurrent runs would race the cursor
+  timeouts_minutes:
+    ingest: 55                  # must stay under the hour or runs queue on the pool
+    backfill: 720
+    reconcile: 1200             # must exceed the worst case or tombstoning never runs
+
+resources:
+  # ── issues ────────────────────────────────────────────────────────────────
+  # Two fetch modes for one table, because the API filters the two endpoints on
+  # different columns. GET /issues filters on created_at only, so it answers
+  # "created in this window" and would silently miss an old issue updated today.
+  # POST /issues/search filters on updated_at, which is what incremental needs.
+  - name: issues
+    primary_key: id
+    write_disposition: merge
+    incremental:
+      strategy: search_window
+      cursor_field: updated_at
+      lookback_seconds: 3600    # merge on id makes the re-fetched overlap idempotent
+      window:                   # the backfill path
+        endpoint: {path: /issues, method: GET, page_size: 20000}
+        filters_on: created_at
+        max_window_days: 30     # hard API cap
+      search:                   # the steady-state path
+        endpoint: {path: /issues/search, method: POST, page_size: 500}
+        cursor_in: body         # not a query param, unlike every other endpoint
+    timestamp_columns:
+      [created_at, updated_at, latest_message_time, resolution_time, snoozed_until_time]
+    # Hinted, not merely parsed. dlt must type these deterministically because
+    # the incremental logic COMPARES them: updated_at is the cursor, created_at
+    # is the window filter, latest_message_time drives the messages watermark.
+    # The other two are parsed for the warehouse but nothing compares them, so
+    # inference is fine and hinting them would be maintenance without a failure
+    # it prevents.
+    hint_columns: [created_at, updated_at, latest_message_time]
+    # Absence only means "deleted" on a run that fetched all of history; on an
+    # incremental run everything outside the window is absent and innocent.
+    soft_delete: full_history
+    # Lift the analytically hot nested scalars to real columns. Everything else
+    # nested is JSON-stringified, so a new Pylon custom field can never mint a
+    # surprise warehouse column.
+    promote:
+      account.id: account_id
+      assignee.id: assignee_id
+      assignee.email: assignee_email
+      requester.id: requester_id
+      requester.email: requester_email
+      team.id: team_id
+
+  # ── issue_messages ────────────────────────────────────────────────────────
+  # No cross-issue endpoint exists, so the worklist is computed from the
+  # warehouse rather than from a cursor. See extensions.
+  - name: issue_messages
+    primary_key: id
+    write_disposition: merge
+    incremental:
+      strategy: parent_watermark
+      parent: issues
+      endpoint: {path: "/issues/{issue_id}/messages", method: GET}
+      # 400/404/410 mean the issue is gone or scrubbed; skip it rather than fail
+      # the run over a ticket that no longer exists.
+      skip_statuses: [400, 404, 410]
+      budget_minutes: 25        # stop cleanly; the watermark resumes next run
+    timestamp_columns: [timestamp]
+    hint_columns: [timestamp]
+    html_text: {message_html: message_text}
+
+  # ── directory ─────────────────────────────────────────────────────────────
+  # Small, fully re-fetched every run. Merge rather than replace, deliberately:
+  # replace would delete the rows the soft-delete pass needs to still be there.
+  - name: accounts
+    primary_key: id
+    write_disposition: merge
+    soft_delete: always
+    endpoint: {path: /accounts, method: GET, page_size: 999, family: directory}
+    timestamp_columns: [created_at, updated_at, latest_customer_message_time]
+  - name: users
+    primary_key: id
+    write_disposition: merge
+    soft_delete: always
+    endpoint: {path: /users, method: GET, page_size: 999, family: directory}
+    timestamp_columns: [created_at, updated_at, latest_customer_message_time]
+  - name: teams
+    primary_key: id
+    write_disposition: merge
+    soft_delete: always
+    endpoint: {path: /teams, method: GET, page_size: 999, family: directory}
+    timestamp_columns: [created_at, updated_at, latest_customer_message_time]
+  - name: contacts
+    primary_key: id
+    write_disposition: merge
+    soft_delete: always
+    endpoint: {path: /contacts, method: GET, page_size: 999, family: directory}
+    timestamp_columns: [created_at, updated_at, latest_customer_message_time]
+
+# Pylon's envelope, shared by every endpoint above.
+pagination:
+  kind: cursor
+  cursor_path: pagination.cursor
+  has_more_path: pagination.has_next_page
+  cursor_param: cursor
+  data_selector: data
+
+quality:
+  # Absence is a fact about the tenant, not a fault — dlt only creates a table
+  # once a resource yields a row, so a tenant with no teams has no teams table.
+  # issues is the exception: nothing else means anything without it.
+  required: [issues]
+  freshness:
+    table: issues
+    column: updated_at
+    hours: 24
+    severity: warn              # a quiet tenant is not a broken pipeline
+  max_deleted_fraction: 0.5     # more tombstoned than this means a partial fetch
+  references:
+    - {child: issues.account_id, parent: accounts.id}
+    - {child: issue_messages.issue_id, parent: issues.id}
+  not_null:
+    issues: [created_at]
+    issue_messages: [issue_id, timestamp]
+
+# What the declarative contract cannot express. Both are real Pylon behaviours,
+# and both are the reason this escape hatch exists rather than a nicer schema.
+#
+#   glitch_paginator  pages that report has_next_page: true while carrying no
+#                     data. Retries the same cursor with backoff, then gives up
+#                     loudly instead of looping forever.
+#   pending_parent_ids the issue_messages worklist: issues whose
+#                     latest_message_time is newer than the newest loaded
+#                     message. A warehouse query, not an API cursor.
+extensions: pylon

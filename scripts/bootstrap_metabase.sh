@@ -120,6 +120,9 @@ fi
 # command — `mb auth login` needs a key, which is what we are here to create.
 
 echo "==> Provisioning an API key"
+# Set on the two paths that mean this instance has something Metabase has never
+# scanned; step 5 reads it to decide whether to pay for a schema sync.
+NEEDS_SCHEMA_SYNC=0
 key_works() {
   [[ -n "${1:-}" ]] && MB_API_KEY="$1" mb auth status --json --max-bytes 0 >/dev/null 2>&1
 }
@@ -169,6 +172,7 @@ else
 
   key_works "$MB_API_KEY" || { echo "error: the new API key does not authenticate" >&2; exit 1; }
   note "wrote MB_API_KEY to .env and verified it"
+  NEEDS_SCHEMA_SYNC=1
 fi
 
 # Everything below authenticates as mb, via MB_URL + MB_API_KEY in the environment.
@@ -250,10 +254,18 @@ else
     -H 'Content-Type: application/json' -d "$DB_BODY" | jq -r '.id // empty')"
   [[ -n "$DB_ID" ]] || { echo "error: could not add the warehouse database" >&2; exit 1; }
   note "connected as '${WAREHOUSE_MB_NAME}' (id ${DB_ID})"
+  NEEDS_SCHEMA_SYNC=1
 fi
 
-mb db sync-schema "$DB_ID" --wait --json --max-bytes 0 >/dev/null
-note "schema synced"
+# An unbounded ClickHouse schema scan, and the deploy path runs this script on
+# every deploy. Only a connection this invocation made has never been scanned;
+# Metabase keeps the rest current on its own schedule.
+if (( NEEDS_SCHEMA_SYNC )); then
+  mb db sync-schema "$DB_ID" --wait --json --max-bytes 0 >/dev/null
+  note "schema synced"
+else
+  note "schema sync skipped (nothing new connected) — force with: mb db sync-schema ${DB_ID} --wait"
+fi
 
 cat <<EOF
 

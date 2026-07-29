@@ -9,26 +9,35 @@ import dlt
 import pendulum
 from dlt.destinations.exceptions import DatabaseUndefinedRelation
 
-from .ingest.settings import DATASET_NAME, MESSAGE_WATERMARK_FUDGE_SECONDS, PRODUCTION_DESTINATION
+from .ingest.settings import MESSAGE_WATERMARK_FUDGE_SECONDS, PRODUCTION_DESTINATION
 
 log = logging.getLogger(__name__)
 
-PIPELINE_NAME = "pylon"
-
 # Resolved from the package, not the cwd: dlt only picks up schemas/ when it can
 # find the directory, and Airflow workers run from an arbitrary cwd. Tests point
-# PYLON_SCHEMA_DIR at a tmp dir so they never write into the repo.
+# the override at a tmp dir so they never write into the repo.
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 SCHEMA_DIR_ENV = "PYLON_SCHEMA_DIR"
 
+# dlt reads its destination credentials from the environment. The database is
+# the one credential that differs per source, so it is set here at build time
+# rather than baked into compose — a single global would put every source's
+# tables in one database, sharing one soft-delete pass.
+CLICKHOUSE_DATABASE_ENV = "DESTINATION__CLICKHOUSE__CREDENTIALS__DATABASE"
 
-def schema_dir():
+
+def schema_dir(source=None):
+    """Where dlt exports the schema YAML that makes evolution a git diff.
+
+    Per source, so two connectors cannot overwrite each other's schema file.
+    """
     override = os.environ.get(SCHEMA_DIR_ENV)
-    return Path(override) if override else PROJECT_ROOT / "schemas"
+    base = Path(override) if override else PROJECT_ROOT / "schemas"
+    return base / source if source else base
 
 
-def build_pipeline(destination=PRODUCTION_DESTINATION, dataset_name=DATASET_NAME):
-    """Tables land in `raw_pylon` — a ClickHouse database, a duckdb schema.
+def build_pipeline(source=None, destination=PRODUCTION_DESTINATION, dataset_name=None):
+    """Tables land in `raw_<source>` — a ClickHouse database, a duckdb schema.
 
     ClickHouse has no schemas, so dlt puts every table in the credentials
     database and prefixes it with the dataset name: dataset "raw_pylon" yields
@@ -42,13 +51,18 @@ def build_pipeline(destination=PRODUCTION_DESTINATION, dataset_name=DATASET_NAME
     reach the staging dataset, whose layout is `%s_staging`, turning
     `_staging___issues` into the unreadable `_stagingissues`.
 
-    The credentials database must therefore BE raw_pylon; compose sets that.
+    The credentials database must therefore BE raw_<source>, which is set here
+    rather than in compose so that each source gets its own.
 
     Schema YAML is exported (and imported, when reviewed overrides exist) from
-    schemas/, making schema evolution show up as a git diff.
+    schemas/<source>/, making schema evolution show up as a git diff.
     """
+    source = source or "pylon"
+    if dataset_name is None:
+        dataset_name = f"raw_{source}"
+
     kwargs = {}
-    base = schema_dir()
+    base = schema_dir(source)
     export_dir = base / "export"
     import_dir = base / "import"
     if export_dir.is_dir():
@@ -56,18 +70,17 @@ def build_pipeline(destination=PRODUCTION_DESTINATION, dataset_name=DATASET_NAME
     if import_dir.is_dir():
         kwargs["import_schema_path"] = str(import_dir)
 
-    # Computed from the destination NAME, before it is swapped for a configured
-    # factory below — interpolating the factory yields its whole repr, which dlt
-    # rejects as a working-directory name.
+    # Each source gets its own pipeline, so their incremental cursors live in
+    # separate <DLT_DATA_DIR>/pipelines/<name> state and cannot collide.
     #
-    # Non-production destinations get their own pipeline (working dir + state),
-    # so a local duckdb smoke run can't advance the production incremental
-    # cursor that lives in the shared <DLT_DATA_DIR>/pipelines/<name> state.
-    pipeline_name = (
-        PIPELINE_NAME if destination == PRODUCTION_DESTINATION else f"{PIPELINE_NAME}_{destination}"
-    )
+    # Non-production destinations are namespaced again on top of that, so a
+    # local duckdb smoke run can never advance a production cursor.
+    pipeline_name = source if destination == PRODUCTION_DESTINATION else f"{source}_{destination}"
 
     if destination == "clickhouse":
+        # dlt selects its database while connecting, so this must be set before
+        # the pipeline is built — and it is per source, not per stack.
+        os.environ[CLICKHOUSE_DATABASE_ENV] = dataset_name
         dataset_name = ""
     return dlt.pipeline(
         pipeline_name=pipeline_name,
@@ -75,6 +88,30 @@ def build_pipeline(destination=PRODUCTION_DESTINATION, dataset_name=DATASET_NAME
         dataset_name=dataset_name,
         **kwargs,
     )
+
+
+def ensure_database(source, destination=PRODUCTION_DESTINATION):
+    """Create `raw_<source>` if it is absent. Idempotent, and required.
+
+    ClickHouse selects the database as part of connecting, so dlt fails with
+    "Code: 81. Database raw_x does not exist" during its pre-run sync, before it
+    could create anything. warehouse/init/ cannot cover this either: it runs
+    once, on first initialisation of an empty volume, so a source added later
+    would never get a database on a running stack.
+    """
+    if destination != "clickhouse":
+        return  # duckdb creates its schema on write
+    import clickhouse_connect
+
+    from .config import clickhouse_admin_kwargs
+
+    database = f"raw_{source}"
+    client = clickhouse_connect.get_client(**clickhouse_admin_kwargs())
+    try:
+        client.command(f"CREATE DATABASE IF NOT EXISTS {database}")
+    finally:
+        client.close()
+    log.info("warehouse database %s is present", database)
 
 
 def _as_utc(value):

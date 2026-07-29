@@ -3,6 +3,18 @@
 .dlt/secrets.toml
 **/.dlt/secrets.toml
 
+# Which instance this checkout deploys to. Not secret, but account-specific,
+# and this repository is public.
+.deploy.env
+
+# Terraform. State can contain resource attributes; tfvars holds account ids.
+# .terraform.lock.hcl is deliberately NOT here — it pins provider checksums.
+terraform/.terraform/
+terraform/*.tfstate
+terraform/*.tfstate.*
+terraform/terraform.tfvars
+terraform/*.tfplan
+
 # Local dlt / warehouse artifacts
 *.duckdb
 *.duckdb.wal

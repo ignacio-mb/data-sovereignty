@@ -1,0 +1,231 @@
+#!/usr/bin/env bash
+# Host preparation for the data-sovereignty stack. Prepares a *host*; it does
+# not deploy the app — that is `make up` (first time) and then the deploy
+# path, so a `terraform apply` is never an application event.
+#
+# Every step is idempotent. cloud-init runs this once per instance, but the
+# same script is the supported way to re-apply host changes later:
+#   aws ssm send-command --document-name AWS-RunShellScript \
+#     --parameters commands='["bash /var/lib/cloud/instance/user-data.txt"]'
+set -euxo pipefail
+
+PROJECT="${project}"
+REGION="${region}"
+REPO_DIR="/data/$PROJECT"
+# The operator, the tree owner, and the uid the containers run as are all the
+# same user. That single uid is what makes the bind mounts writable from both
+# sides: AIRFLOW_UID=1000 in .env matches ubuntu, so files the containers
+# write into ./docs, ./airflow/logs and ./quality/gx_output stay editable and
+# deletable from a shell, and files created from a shell stay readable to the
+# containers.
+OPERATOR="ubuntu"
+
+# ─── 1. The data volume ──────────────────────────────────────────────────────
+# Nitro enumerates EBS as NVMe in attach order, so /dev/nvme1n1 is a guess.
+# The volume id is not.
+VOL_ID="$(echo "${data_volume_id}" | tr -d '-')"
+DEV="/dev/disk/by-id/nvme-Amazon_Elastic_Block_Store_$VOL_ID"
+
+for _ in $(seq 1 60); do
+  [ -e "$DEV" ] && break
+  sleep 5
+done
+if [ ! -e "$DEV" ]; then
+  echo "data volume ${data_volume_id} never appeared at $DEV" >&2
+  exit 1
+fi
+
+# Format guard. Reformatting on a reboot would destroy the warehouse, the dlt
+# cursor and every Metabase artefact in one step.
+if ! blkid "$DEV" >/dev/null 2>&1; then
+  mkfs.ext4 -L data "$DEV"
+fi
+
+mkdir -p /data
+grep -q '^LABEL=data ' /etc/fstab || \
+  echo 'LABEL=data /data ext4 defaults,noatime,nofail 0 2' >>/etc/fstab
+mountpoint -q /data || mount /data
+
+# ─── 2. Docker, configured before it ever starts ─────────────────────────────
+# data-root must be set before the first daemon start: moving it afterwards
+# means migrating images and volumes by hand.
+mkdir -p /etc/docker
+cat >/etc/docker/daemon.json <<'JSON'
+{
+  "data-root": "/data/docker",
+  "log-driver": "json-file",
+  "log-opts": { "max-size": "10m", "max-file": "3" },
+  "live-restore": true
+}
+JSON
+
+# Without this, a boot that races the mount leaves dockerd creating
+# /data/docker on the root volume and the stack silently loses every image
+# and volume it had.
+mkdir -p /etc/systemd/system/docker.service.d
+cat >/etc/systemd/system/docker.service.d/10-data-mount.conf <<'UNIT'
+[Unit]
+RequiresMountsFor=/data
+UNIT
+
+export DEBIAN_FRONTEND=noninteractive
+apt-get update -y
+
+if ! command -v docker >/dev/null 2>&1; then
+  install -m 0755 -d /etc/apt/keyrings
+  curl -fsSL https://download.docker.com/linux/ubuntu/gpg -o /etc/apt/keyrings/docker.asc
+  chmod a+r /etc/apt/keyrings/docker.asc
+  echo "deb [arch=arm64 signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/ubuntu $(. /etc/os-release && echo "$VERSION_CODENAME") stable" \
+    >/etc/apt/sources.list.d/docker.list
+  apt-get update -y
+  apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
+fi
+
+systemctl daemon-reload
+systemctl enable --now docker
+
+# ─── 3. Host toolchain ───────────────────────────────────────────────────────
+# scripts/bootstrap_metabase.sh runs on the host, not in a container: it needs
+# jq and the mb CLI. gen_secrets.sh needs openssl.
+apt-get install -y make git jq rsync tmux curl unzip openssl ca-certificates
+
+if ! command -v aws >/dev/null 2>&1; then
+  tmp="$(mktemp -d)"
+  curl -fsSL "https://awscli.amazonaws.com/awscli-exe-linux-aarch64.zip" -o "$tmp/awscliv2.zip"
+  unzip -q "$tmp/awscliv2.zip" -d "$tmp"
+  "$tmp/aws/install"
+  rm -rf "$tmp"
+fi
+
+if ! command -v node >/dev/null 2>&1; then
+  curl -fsSL https://deb.nodesource.com/setup_22.x | bash -
+  apt-get install -y nodejs
+fi
+# Pinned to the same version the image installs, so the host CLI and the one
+# the DAGs call cannot drift.
+npm install -g "@metabase/cli@${mb_cli_version}"
+# The stack is operated by prompt; the CLI is how that happens on this host.
+# A failure here is not worth failing the boot over.
+npm install -g @anthropic-ai/claude-code || true
+
+usermod -aG docker "$OPERATOR"
+
+# ─── 4. Swap ─────────────────────────────────────────────────────────────────
+# EC2 instances have none. On a 16 GB host that turns a Metabase-and-ClickHouse
+# collision from an OOM kill into slowness. It lives on the root volume so it
+# never bloats a data-volume snapshot.
+if [ ! -f /swapfile ]; then
+  fallocate -l 4G /swapfile
+  chmod 600 /swapfile
+  mkswap /swapfile
+  swapon /swapfile
+  grep -q '^/swapfile ' /etc/fstab || echo '/swapfile none swap sw 0 0' >>/etc/fstab
+fi
+sysctl -w vm.swappiness=10
+grep -q '^vm.swappiness' /etc/sysctl.d/99-swappiness.conf 2>/dev/null || \
+  echo 'vm.swappiness=10' >/etc/sysctl.d/99-swappiness.conf
+
+# ─── 5. Layout ───────────────────────────────────────────────────────────────
+mkdir -p /data/deploy /run/"$PROJECT"
+chown "$OPERATOR:$OPERATOR" /data/deploy
+chmod 0755 /run/"$PROJECT"
+
+# /run is a tmpfs, so the deploy lock directory has to be recreated on boot.
+cat >/etc/tmpfiles.d/$PROJECT.conf <<TMPFILES
+d /run/$PROJECT 0755 root root -
+TMPFILES
+
+# The repo is a deploy artefact, not a workspace: deploys reset it to
+# origin/${repo_branch}. Edit on a laptop, merge, let it land here.
+if [ ! -d "$REPO_DIR/.git" ]; then
+  # Public repo, so cloning needs no credentials at all.
+  runuser -u "$OPERATOR" -- git clone --branch "${repo_branch}" "${repo_url}" "$REPO_DIR"
+else
+  # Re-running this script has to be able to move a stale checkout forward.
+  # Without this branch, a host provisioned before the deploy scripts were on
+  # ${repo_branch} can never recover: the re-run replays against the same old
+  # tree and fails at the same line, and the thing that would normally fetch —
+  # ds-deploy — is precisely what failed to install.
+  #
+  # --ff-only so a re-run against a host mid-deploy refuses rather than
+  # clobbers.
+  runuser -u "$OPERATOR" -- git -C "$REPO_DIR" fetch --prune --no-tags origin \
+    "+refs/heads/${repo_branch}:refs/remotes/origin/${repo_branch}"
+  runuser -u "$OPERATOR" -- git -C "$REPO_DIR" merge --ff-only "origin/${repo_branch}"
+fi
+chown -R "$OPERATOR:$OPERATOR" "$REPO_DIR"
+
+# Docker creates a missing bind-mount source as root, which then leaves
+# `dq docs-build` unable to write its output and nginx serving an empty
+# directory with no error anywhere.
+runuser -u "$OPERATOR" -- mkdir -p \
+  "$REPO_DIR/airflow/logs" \
+  "$REPO_DIR/quality/gx_output/data_docs" \
+  "$REPO_DIR/docs"
+
+# ─── 5b. The deploy path ─────────────────────────────────────────────────────
+# These two are copied out of the tree on purpose. They decide whether a commit
+# may be deployed at all, so a commit must not be able to change them: they are
+# pinned here, at provisioning time, and updating them is a deliberate re-run
+# of this script rather than a merge.
+install -m 0755 "$REPO_DIR/scripts/ds-deploy.sh"   /usr/local/bin/ds-deploy
+install -m 0755 "$REPO_DIR/scripts/ds-converge.sh" /usr/local/bin/ds-converge
+
+install -m 0644 "$REPO_DIR"/scripts/systemd/*.service /etc/systemd/system/
+install -m 0644 "$REPO_DIR"/scripts/systemd/*.timer   /etc/systemd/system/
+systemctl daemon-reload
+# The stack itself is enabled but not started: it needs .env, which comes from
+# Parameter Store in the first-deploy runbook.
+systemctl enable "$PROJECT".service
+systemctl enable --now ds-converge.timer ds-disk-check.timer
+
+# ─── 6. SSH over SSM ─────────────────────────────────────────────────────────
+# Not for inbound SSH — there is no open port. This is what lets
+# `ProxyCommand aws ssm start-session --document-name AWS-StartSSHSession`
+# carry rsync and multi-port `ssh -L` tunnels over the SSM channel.
+%{ if ssh_public_key != "" ~}
+install -d -m 0700 -o "$OPERATOR" -g "$OPERATOR" "/home/$OPERATOR/.ssh"
+touch "/home/$OPERATOR/.ssh/authorized_keys"
+grep -qxF '${ssh_public_key}' "/home/$OPERATOR/.ssh/authorized_keys" || \
+  echo '${ssh_public_key}' >>"/home/$OPERATOR/.ssh/authorized_keys"
+chown "$OPERATOR:$OPERATOR" "/home/$OPERATOR/.ssh/authorized_keys"
+chmod 0600 "/home/$OPERATOR/.ssh/authorized_keys"
+%{ endif ~}
+
+# ─── 7. Tailscale ────────────────────────────────────────────────────────────
+%{ if tailscale ~}
+if ! command -v tailscale >/dev/null 2>&1; then
+  curl -fsSL https://tailscale.com/install.sh | sh
+fi
+if ! tailscale status >/dev/null 2>&1; then
+  TS_KEY="$(aws ssm get-parameter --region "$REGION" --with-decryption \
+    --name '${tailscale_param}' --query 'Parameter.Value' --output text)"
+  tailscale up --ssh --auth-key "$TS_KEY"
+  unset TS_KEY
+fi
+%{ endif ~}
+
+# ─── 8. CloudWatch agent ─────────────────────────────────────────────────────
+%{ if cw_agent ~}
+if [ ! -f /opt/aws/amazon-cloudwatch-agent/bin/amazon-cloudwatch-agent-ctl ]; then
+  tmp="$(mktemp -d)"
+  curl -fsSL "https://amazoncloudwatch-agent.s3.amazonaws.com/ubuntu/arm64/latest/amazon-cloudwatch-agent.deb" \
+    -o "$tmp/cwagent.deb"
+  dpkg -i -E "$tmp/cwagent.deb"
+  rm -rf "$tmp"
+fi
+# Not fatal: metrics are not worth failing a boot over, and the two alarms
+# treat missing data as breaching, so an agent that never starts sends an
+# email rather than sitting green.
+/opt/aws/amazon-cloudwatch-agent/bin/amazon-cloudwatch-agent-ctl \
+  -a fetch-config -m ec2 -s -c "ssm:${cw_config_param}" \
+  || echo "cloudwatch agent config fetch failed" >&2
+%{ endif ~}
+
+# ─── 9. Housekeeping the laptop never needed ─────────────────────────────────
+# Security updates yes, a reboot in the middle of a 20-hour reconcile no.
+cat >/etc/apt/apt.conf.d/52-no-auto-reboot <<'CONF'
+Unattended-Upgrade::Automatic-Reboot "false";
+CONF
+
+echo "host preparation complete"

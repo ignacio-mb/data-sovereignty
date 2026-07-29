@@ -1,0 +1,23 @@
+[Unit]
+# Containers carry restart: unless-stopped, so an ordinary reboot brings the
+# stack back on its own. This unit is for the cases that are not ordinary: a
+# replacement instance built from a restored volume, and a host that has never
+# been bootstrapped — where the bring-up has to be staged because Metabase must
+# exist before it can mint the API key that the Airflow containers are created
+# with.
+Description=data-sovereignty stack
+Requires=docker.service
+After=docker.service network-online.target
+RequiresMountsFor=/data
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+User=ubuntu
+WorkingDirectory=/data/data-sovereignty
+ExecStart=/data/data-sovereignty/scripts/stack_boot.sh
+ExecStop=/usr/bin/docker compose --profile cli down
+TimeoutStartSec=1800
+
+[Install]
+WantedBy=multi-user.target

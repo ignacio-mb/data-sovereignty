@@ -1,4 +1,8 @@
-ARG AIRFLOW_BASE_IMAGE=apache/airflow:3.3.0-python3.12
+# Pinned by digest because this image is built on the production host as root: a
+# republished tag would execute there during a routine deploy. The multi-arch index
+# digest still resolves per-platform. A tag bump means re-resolving the digest with
+# `docker buildx imagetools inspect <ref> --format '{{json .Manifest}}' | jq -r .digest`.
+ARG AIRFLOW_BASE_IMAGE=apache/airflow:3.3.0-python3.12@sha256:96e99f25815f533b298a4d53f283adf5c84c27334ea16ef232777cb800bddf10
 FROM ${AIRFLOW_BASE_IMAGE}
 
 # Which mb-cli to install. Defaults to the pinned published package so a clean
@@ -45,8 +49,9 @@ RUN set -eux; \
     rm -rf /tmp/mb-cli-vendor; \
     mb --version
 
-# uv builds the workspace venv.
-COPY --from=ghcr.io/astral-sh/uv:0.8.17 /uv /usr/local/bin/uv
+# uv builds the workspace venv. Digest-pinned for the same reason as the base
+# image; a tag bump means re-resolving it.
+COPY --from=ghcr.io/astral-sh/uv:0.8.17@sha256:e4644cb5bd56fdc2c5ea3ee0525d9d21eed1603bccd6a21f887a938be7e85be1 /uv /usr/local/bin/uv
 
 WORKDIR /opt/project
 

@@ -1,84 +1,139 @@
 ---
 name: add-source
-description: Add a new ingestion source alongside Pylon — a second API, a database, or a file drop. Triggers — "also ingest Zendesk", "add Salesforce data", "pull from our production database", "I want another source", "how do I add a new connector?".
-allowed-tools: Bash, Read, Write, Edit, Glob, Grep, AskUserQuestion
+description: Connect a new API to the warehouse — research it, agree the sync semantics, generate the connector, prove it loads. Triggers — "also ingest Zendesk", "add Salesforce data", "connect our Stripe account", "pull from the GitHub API", "I want another source", "how do I add a new connector?", "set up a new sync".
+allowed-tools: Bash, Read, Write, Edit, Glob, Grep, WebFetch, WebSearch, AskUserQuestion
 ---
 
-# Adding a source
+# Connecting a source
 
-The stack is built around Pylon but nothing about the shape is Pylon-specific.
-A new source is a fourth uv workspace member that follows the same contract.
+A source is a file. `sources/<name>.yml` says what the API is, how it pages, what
+is incremental, when it runs, and what "correct" means for the tables it lands;
+the runtime does the rest. Most connectors need no Python at all.
 
-## Before writing any code
+Four phases: **research the API, agree what only a human can decide, generate the
+connector, prove it loads.** Do not skip to generating — the questions in phase 2
+are the ones that silently lose rows when guessed.
 
-Ask three things, because they determine most of the design:
+## Phase 1 — Research the API
 
-1. **What is the incremental key?** An `updated_at` the API can filter on is the
-   good case. Only a `created_at` filter (Pylon's situation) means you need two
-   modes. No cursor at all means full refresh every run — fine for small
-   reference data, not for events.
-2. **How does the API paginate, and what is its rate limit?** Both go into
-   settings as named constants, not scattered through the code.
-3. **What is the primary key, and are deletions visible?** Merge needs a stable
-   key. If deletes are invisible, you need an absence-based reconciliation pass
-   like Pylon's weekly one.
+Find these out yourself. Asking a user for a rate limit they would have to go
+look up is asking them to do your job.
 
-## The shape to copy
+| What | Where it usually is | Goes into |
+|---|---|---|
+| Base URL, auth scheme | "Authentication" / "Getting started" | `api.base_url`, `api.auth` |
+| Endpoints and their shapes | the reference, or an OpenAPI/Swagger doc | `resources[].endpoint` |
+| Pagination style | "Pagination" — cursor, offset, page number, link header | `pagination` |
+| Page-size cap | often one sentence, often different per endpoint | `endpoint.page_size` |
+| **Rate limits** | "Rate limits" / "Limits" — frequently per endpoint family | `rate_limits` |
+| Which fields are timestamps | the response schema | `timestamp_columns` |
+| Whether deletes are visible | "Deletions", or conspicuous silence | `soft_delete` |
 
-`pipeline/` is the worked example. Create `sources/<name>/` as a sibling
-workspace member with the same layout:
+Start with `WebSearch` for `<api> API documentation rate limits`, then `WebFetch`
+the pages that matter. **If the API publishes an OpenAPI spec, fetch it** —
+endpoints, pagination and field types come straight out of it.
 
+Report what you found and, explicitly, what you could not. **Never invent a rate
+limit.** A guessed budget gets discovered by being 429'd in production, usually
+mid-backfill. If the docs are silent, say so and ask — that is the one limit
+question worth a user's time.
+
+Check the pagination against the runtime's vocabulary — `cursor`, `offset`,
+`page_number`, `json_link`, `header_link`, `single_page`. Something outside that
+list means an extension, and it is much cheaper to know now than in phase 3.
+
+## Phase 2 — Ask what research cannot answer
+
+Use `AskUserQuestion`. These are decisions, not facts:
+
+1. **Schedule and backfill window.** How often to sync, and how far back the
+   first load reaches. Backfill cost is the window times the rate limit — if that
+   is hours, say so before they agree to it, not after.
+
+2. **The incremental strategy, per endpoint.** The one that silently loses data.
+   Establish *which field is the cursor* and *which field the API filters on*.
+   They are often not the same. If the list endpoint filters on creation time
+   only, an incremental sync will never see an old record updated today — that
+   needs a second endpoint filtering on update time, which is what
+   `search_window` exists for. Ask; do not assume they match.
+
+3. **Quality expectations and criticality.** Freshness SLO, whether the source
+   gates the pipeline or is advisory, and which endpoints are *required* versus
+   *optional*. Absence is often normal — a tenant with no teams has no teams
+   table — and only the user knows whether that is expected or alarming.
+
+4. **Deletes.** Does the API say when something is deleted? If not, the only
+   signal is absence from a complete fetch, which means `soft_delete` and a
+   periodic full-history reconcile. Wrong in the permissive direction, a partial
+   fetch tombstones the warehouse.
+
+## Phase 3 — Generate
+
+Write `sources/<name>.yml`. Read `sources/pylon.yml` first — it is the reference
+connector and its comments explain why each field exists. Then:
+
+```bash
+uv run python -c "from pylon_pipeline import spec; print(spec.load('<name>'))"
 ```
-pyproject.toml            console script, dlt[clickhouse]
-src/<name>_pipeline/
-  cli.py                  Click CLI; --destination, --summary-json
-  warehouse.py            build_pipeline(); non-prod destinations get their own
-                          pipeline name so smoke runs cannot touch the cursor
-  ingest/
-    settings.py           API URL, rate limits, page sizes, backfill epoch
-    client.py             the HTTP client and its paginator
-    transform.py          flatten nested JSON, parse timestamps
-    hints.py              explicit dlt column hints on cursor columns only
-    source.py             @dlt.source(max_table_nesting=0)
-tests/conftest.py         requests-mock that implements the API's real semantics
+
+The loader rejects unknown keys, unknown incremental strategies, a bare `true`
+for `soft_delete`, and referential edges naming tables the spec never declared.
+A spec that loads is one the runtime can act on.
+
+Also generate:
+- the DAG file (thin, calling the shared factory)
+- the credential: `<NAME>_API_KEY` in `.env.example` and in the secrets push list
+- a test fixture in `pipeline/tests/` modelled on `conftest.py` — a mock whose
+  handlers **implement the API's filtering and pagination**, not canned bodies.
+  That is what makes the harness worth copying: it exercises the paginator
+  against the envelope the real API actually returns.
+
+### When the spec is not enough
+
+Some APIs do things no configuration language should have to describe. Pylon
+returns pages claiming `has_next_page: true` while carrying no data, and its
+messages have no cross-issue endpoint so the worklist is a warehouse query. Both
+live in a module named by `extensions:` in the spec.
+
+Reach for it only after trying the declarative form — an extension is real code
+with real maintenance. But do not contort the spec to avoid one: a connector that
+quietly loses rows is worse than a connector with a Python file.
+
+## Phase 4 — Prove it loads
+
+In order. Each step is cheap and rules out a different failure.
+
+```bash
+# 1. Fetch shape and transform, against duckdb — never touches production state
+docker compose --profile cli run --rm airflow-cli \
+  ingest --destination duckdb --sample 3
+
+# 2. A bounded real load
+docker compose --profile cli run --rm airflow-cli ingest --destination clickhouse
+
+# 3. The quality gate
+docker compose --profile cli run --rm airflow-cli dq run --checkpoint raw_<name>
 ```
 
-Then: add the member to the root `pyproject.toml`, symlink its console script in
-`docker/airflow/Dockerfile`, and add a DAG modelled on `pylon_ingest_hourly`.
+`--sample 3` prints records **post-transform, pre-load** — exactly as they will
+land. Read them. A promoted field that is `None` for every record means the path
+in `promote` is wrong, and no test will catch that.
 
-## The four patterns worth carrying over verbatim
+Then check the warehouse: `make ch`, then `SELECT count() FROM raw_<name>.<table>`.
 
-**`EndpointPacer`** (`pipeline/src/pylon_pipeline/ingest/pacing.py`) — space
-requests proactively per endpoint family rather than hammering until a 429.
-Thirty lines, no dependencies, source-agnostic. Copy it as is.
+## Rules
 
-**`max_table_nesting=0` plus explicit flattening** — stringify nested objects
-and promote only the fields you actually query. This is what stops a new
-user-defined field in the upstream tool from minting a surprise warehouse column
-or child table.
-
-**Hint only the load-bearing columns** — cursor timestamps and boolean flags. Let
-everything else be inferred. Type drift on a cursor column silently breaks
-incremental loading.
-
-**A mock that implements the API's semantics, not canned responses** — the Pylon
-conftest actually filters by timestamp and paginates. That is what makes the
-end-to-end CLI tests worth running.
-
-## The rest of the stack
-
-Adding a source is not finished when data lands:
-
-- **Quality** — a new suite module in `quality/src/pylon_quality/suites/`, and a
-  checkpoint name in `cli.py`. Identity, freshness and referential checks.
-- **Modeling** — `base_<source>_*` transforms, then conform into the existing
-  `dim_*` where the entities overlap. Two sources describing the same accounts
-  is the interesting case and the reason `dim_account` exists.
-- **The pool** — reuse `pylon_pipeline` only if the sources share a rate limit
-  budget. Otherwise give the new source its own pool so one slow backfill does
-  not block the other's hourly run.
-
-## Rename first
-
-If a second source is going in, `pylon_quality` and the `pylon_pipeline` pool
-become misnomers. Renaming is cheap now and annoying later.
+- **`raw_<source>` is derived, never configured.** Two sources sharing a database
+  share a soft-delete pass, where "absent from this run" comes to mean "belongs
+  to the other source".
+- **Each source gets its own pool of 1.** The pool stops concurrent runs racing
+  *that source's* cursor. Sharing one serialises connectors that have no reason
+  to wait for each other.
+- **Hint only the columns the incremental logic compares.** A hint is a schema
+  commitment; a column nothing compares should stay inferred.
+- **Never ingest by hand against the production warehouse while the stack is up.**
+  Airflow serialises through the pool; an out-of-band run races the cursor.
+  `--destination duckdb` is always safe.
+- **If a source needs a change to the runtime, stop.** The abstraction leaked and
+  the spec is probably wrong. Say so rather than editing `runtime.py` to fit one
+  API — that is how a generic runtime becomes six connectors in a trench coat.
