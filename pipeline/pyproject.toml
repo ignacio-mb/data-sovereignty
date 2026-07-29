@@ -9,6 +9,7 @@ dependencies = [
     "click>=8.1",
     "pendulum>=3.0",
     "python-dotenv>=1.0",
+    "pyyaml>=6",          # source specs
 ]
 
 [project.scripts]
