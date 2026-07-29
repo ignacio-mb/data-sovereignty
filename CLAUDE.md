@@ -1,6 +1,6 @@
 # Working in this repo
 
-A self-hosted data stack: Pylon → ClickHouse → Metabase, orchestrated by Airflow
+A self-hosted data stack: any REST API → ClickHouse → Metabase, orchestrated by Airflow
 and validated by Great Expectations. Designed to be operated by prompt.
 
 **Start with `.claude/skills/data-stack/SKILL.md`** — it routes to the right leaf
@@ -11,7 +11,8 @@ procedures.
 
 | Path | What lives there |
 |---|---|
-| `pipeline/` | `pylon` CLI — Pylon API → `raw_pylon.*` via dlt |
+| `sources/` | One YAML per connector — the source contract |
+| `pipeline/` | `ingest` CLI — a source spec → `raw_<source>.*` via dlt |
 | `quality/` | `dq` CLI — Great Expectations suites, results → `ops.*` |
 | `metabase/` | `mbx` CLI — transforms, semantic layer, git-sync |
 | `metabase/transforms/manifest.yml` | The transform contract. Read by `mbx` **and** by the mart quality suites. |
@@ -21,7 +22,7 @@ procedures.
 | `terraform/` | The AWS host. `docs/deploy.md` is the runbook. |
 
 The three Python packages are uv workspace members sharing one environment, so
-`pylon`, `dq` and `mbx` are always installed together.
+`ingest`, `dq` and `mbx` are always installed together.
 
 ## Warehouse
 
@@ -43,9 +44,15 @@ does not exist` during its pre-run sync, before it can create anything.
 Ownership of the *contents* is unchanged — dlt owns the tables in `raw_pylon`,
 Metabase transforms own `analytics`, `dq ops-init` owns `ops`.
 
-**dlt writes into `raw_pylon` directly, with an empty dataset name AND an empty
-`dataset_table_separator`.** Leave either set and the tables come out as
-`raw_pylon.raw_pylon___issues`. See `build_pipeline`.
+**dlt writes into `raw_<source>` directly, with an EMPTY dataset name.** With a
+dataset set, tables arrive as `raw_pylon.raw_pylon___issues`; empty, dlt falls
+through to the bare table name. Do *not* also blank `dataset_table_separator` —
+it changes nothing here (there is no prefix left to separate) and it does reach
+the staging dataset, turning `_staging___issues` into `_stagingissues`.
+
+The database is set per source at build time rather than in compose, because a
+single global would put every source in one database sharing one soft-delete
+pass. See `build_pipeline` and `ensure_database`.
 
 ## Data quality on ClickHouse
 
@@ -103,7 +110,7 @@ command that gets logged, never commit one. To check configuration, test whether
 a variable is *set*.
 
 **Ingest through Airflow while the stack is up.** A pool of one serializes dlt
-runs; an out-of-band `pylon ingest --destination clickhouse` races the incremental
+runs; an out-of-band `ingest run --destination clickhouse` races the incremental
 cursor. `--destination duckdb` is always safe — separate pipeline name.
 
 **`warehouse-data` and `dlt-state` are a matched pair.** The cursor describes
