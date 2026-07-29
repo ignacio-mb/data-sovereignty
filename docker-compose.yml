@@ -153,7 +153,7 @@ services:
       # on nothing and failing its healthcheck forever. Mounted file by file,
       # not as a directory: config.d already holds the image's own
       # docker_related_config.xml, and a directory mount would hide it.
-      - ./warehouse/config/listen.xml:/etc/clickhouse-server/config.d/listen.xml:ro
+      - ./warehouse/config/zz-listen.xml:/etc/clickhouse-server/config.d/zz-listen.xml:ro
 
   # Metabase's own application database. Never share this between instances.
   metabase-app-db:

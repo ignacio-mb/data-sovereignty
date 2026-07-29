@@ -1,0 +1,29 @@
+<?xml version="1.0"?>
+<!--
+  Listen on IPv4, explicitly.
+
+  The image ships docker_related_config.xml, which sets <listen_host>::</listen_host>
+  together with <listen_try>1</listen_try>. On a host without IPv6 every bind then
+  fails with "Address family for hostname not supported", listen_try swallows the
+  error, and the server comes up listening on nothing at all — alive, logging
+  normally, and refusing every connection. The healthcheck fails for the full two
+  minutes and takes Metabase down with it, because Metabase waits on a healthy
+  warehouse.
+
+  Docker Desktop's VM has IPv6, so this never appears on a laptop. It appears the
+  first time the stack runs on a plain IPv4 VPC, which is most of them.
+
+  The zz- prefix is load-bearing. ClickHouse merges config.d alphabetically, and
+  this has to land after both the image's docker_related_config.xml and
+  low-memory.xml. Named listen.xml it merged earlier and the server came up bound
+  to 127.0.0.1 only — which still passes the healthcheck, because that runs
+  inside the container, while Metabase and Airflow cannot reach it at all. A
+  worse failure than the one being fixed, and a quieter one.
+
+  Verified against this image: binds 0.0.0.0 on 8123 and 9000, and answers /ping
+  from a second container on the same network.
+-->
+<clickhouse>
+    <listen_host replace="replace">0.0.0.0</listen_host>
+    <listen_try>1</listen_try>
+</clickhouse>
