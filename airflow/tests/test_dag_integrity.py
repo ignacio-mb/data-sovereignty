@@ -86,7 +86,7 @@ def test_a_failed_task_turns_the_run_red(dagbag, dag_id):
     assert [task.task_id for task in leaves] == ["run_verdict"], \
         f"{dag_id}: the run's verdict must come from one task that reflects real failures"
     assert leaves[0].trigger_rule == TriggerRule.NONE_FAILED, \
-        "ALL_SUCCESS would turn the skipped transform stop gate into a failure"
+        "an upstream failure must reach the verdict, and a skip must not"
 
     # A verdict hanging off record_ops alone would inherit the same lie: trigger
     # rules see direct upstream tasks only.
@@ -103,42 +103,12 @@ def test_ops_is_recorded_even_when_the_run_fails(dagbag):
         assert task.trigger_rule == TriggerRule.ALL_DONE, dag_id
 
 
-def test_the_hourly_dag_verifies_before_and_after_modeling(dagbag):
+def test_the_hourly_dag_verifies_before_it_records(dagbag):
     dag = dagbag.dags["pylon_ingest_hourly"]
-    order = ["ingest", "verify_raw", "transform", "verify_marts", "record_ops"]
+    order = ["ingest", "verify_raw", "record_ops"]
     for upstream, downstream in pairwise(order):
         assert downstream in dag.get_task(upstream).downstream_task_ids, \
             f"{upstream} should run before {downstream}"
-
-
-def test_the_empty_manifest_stop_gate_is_a_skip_not_a_failure(dagbag):
-    """Modeling is stop-gated until the docs/ deliverables are done, so until
-    then `mbx transforms` has nothing to build. Failing on it would paint every
-    hourly run red for an expected state, which is how alerts stop being read."""
-    from common import NOTHING_TO_BUILD_EXIT
-
-    task = dagbag.dags["pylon_ingest_hourly"].get_task("transform")
-    assert NOTHING_TO_BUILD_EXIT in _skip_exit_codes(task)
-
-
-def test_the_skip_code_matches_the_one_mbx_actually_exits_with(dagbag):
-    """common.py restates the constant rather than importing it — these DAGs do
-    not import the pipeline packages. That makes drift possible, so it is checked
-    here instead: a mismatch turns the skip back into a hard failure."""
-    from common import NOTHING_TO_BUILD_EXIT
-
-    source = (
-        Path(__file__).resolve().parents[2]
-        / "metabase" / "src" / "mb_tools" / "run_transforms.py"
-    ).read_text()
-    assert f"NOTHING_TO_BUILD_EXIT = {NOTHING_TO_BUILD_EXIT}" in source
-
-
-def _skip_exit_codes(task):
-    codes = getattr(task, "skip_on_exit_code", None)
-    if codes is None:
-        return ()
-    return (codes,) if isinstance(codes, int) else tuple(codes)
 
 
 def test_only_the_reconcile_dag_can_tombstone(dagbag):

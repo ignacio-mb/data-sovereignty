@@ -1,9 +1,9 @@
 """Shared pieces of the Pylon DAGs.
 
-The DAGs shell out to `pylon`, `dq` and `mbx` rather than importing them. Those
-tools live in their own virtualenv at /opt/data-venv with dlt and Great
-Expectations behind them; importing that tree into Airflow's own environment
-would mean reconciling two large, tightly-pinned dependency graphs forever.
+The DAGs shell out to `ingest` and `dq` rather than importing them. Those tools
+live in their own virtualenv at /opt/data-venv with dlt and Great Expectations
+behind them; importing that tree into Airflow's own environment would mean
+reconciling two large, tightly-pinned dependency graphs forever.
 """
 
 from __future__ import annotations
@@ -15,12 +15,6 @@ from airflow.sdk import TriggerRule
 # Serializes every dlt run. Two concurrent ingests share one pipeline working
 # directory and one incremental cursor, and would interleave into nonsense.
 INGEST_POOL = "pylon_pipeline"
-
-# `mbx transforms` exits with this when the manifest declares nothing to build.
-# Duplicated rather than imported: these DAGs deliberately do not import the
-# pipeline packages, so the constant is restated here and kept in step with
-# mb_tools.run_transforms.NOTHING_TO_BUILD_EXIT by the DAG integrity test.
-NOTHING_TO_BUILD_EXIT = 99
 
 # Written by the ingest task, read by the ops task. Per-run so a backfill and an
 # hourly run can never read each other's summary.
@@ -67,8 +61,10 @@ def run_verdict():
     green no matter what broke upstream. Ingest died with a missing API key three
     hours running and the DAG reported success each time.
 
-    NONE_FAILED rather than ALL_SUCCESS: a skipped stop gate — an empty transform
-    manifest — is an expected state, not a failure, and has to stay green.
+    NONE_FAILED rather than ALL_SUCCESS: the two agree on everything that matters
+    here — upstream_failed still counts as failed, so a dead ingest reddens the
+    run either way — and NONE_FAILED leaves room for a task that skips for a
+    reason the pipeline expects.
 
     Wire it downstream of the real work *and* of record_ops, never downstream of
     record_ops alone: trigger rules look only at direct upstream tasks, so a
@@ -95,5 +91,4 @@ def record_ops_command():
         "else\n"
         "  echo 'no ingest summary — the ingest task did not complete'\n"
         "fi\n"
-        "dq ops-sync || echo 'transform run sync failed (Metabase may be down); continuing'\n"
     )

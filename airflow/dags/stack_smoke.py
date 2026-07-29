@@ -34,8 +34,6 @@ with DAG(
             "set -euo pipefail\n"
             "ingest --help > /dev/null && echo 'ingest ok'\n"
             "dq --help    > /dev/null && echo 'dq ok'\n"
-            "mbx --help   > /dev/null && echo 'mbx ok'\n"
-            "mb --version                && echo 'mb ok'\n"
         ),
     )
 
@@ -51,14 +49,13 @@ with DAG(
 
     metabase = BashOperator(
         task_id="metabase",
-        # `mb auth status` is the cheapest call that proves both the URL and the
-        # API key are right; a missing key exits non-zero rather than hanging.
-        # Its payload identifies the authenticated principal, and task logs are
-        # readable by anyone with the Airflow UI, so only the verdict is kept.
+        # Hosting the instance is this repo's job, so what it proves is that the
+        # container is up and reachable on the compose network — MB_URL is the
+        # service name, not the published port. /api/health needs no credential
+        # and answers 503 until the app-db migrations finish, so -f is the check.
         bash_command=(
             "set -euo pipefail\n"
-            'test -n "${MB_API_KEY:-}" || { echo "MB_API_KEY is empty — has bootstrap run?"; exit 1; }\n'
-            "mb auth status --json --max-bytes 0 > /dev/null && echo 'metabase ok'\n"
+            'curl -fsS "${MB_URL}/api/health" >/dev/null && echo \'metabase ok\'\n'
         ),
     )
 

@@ -10,9 +10,13 @@
 -- "Code: 81. Database raw_pylon does not exist" during its pre-run sync, before
 -- it has a chance to create anything. The database has to be there first.
 --
--- Ownership of the CONTENTS is unchanged: dlt owns the tables in raw_pylon,
--- Metabase transforms own the tables in analytics, and `dq ops-init` owns the
--- tables in ops. This file creates empty containers and nothing else.
+-- Ownership of the CONTENTS belongs to whatever writes them: dlt owns the tables
+-- in raw_pylon and `dq ops-init` owns the tables in ops. Nothing in this repo
+-- writes analytics — it is the container the modeling project builds into, and
+-- it is created here because here is the only chance: this file runs once, and
+-- adding a database afterwards means a hand-run statement on every host.
+--
+-- This file creates empty containers and nothing else.
 
 CREATE DATABASE IF NOT EXISTS raw_pylon;
 CREATE DATABASE IF NOT EXISTS analytics;

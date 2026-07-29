@@ -1,6 +1,6 @@
 ---
 name: data-stack
-description: Router for operating the self-hosted data stack — ingestion from any REST API, orchestration, data quality, and pipeline health. Triggers — "ingest Pylon data", "connect a new API", "is my pipeline healthy?", "verify the state of my success engineering department", "backfill last quarter", "why did the quality check fail?", "bring the stack up", "what changed in the warehouse?", "add a metric", "version Metabase content in git", "sync my dashboards"
+description: Router for operating the self-hosted data stack — ingestion from any REST API, orchestration, data quality, and pipeline health. Triggers — "ingest Pylon data", "connect a new API", "is my pipeline healthy?", "verify the state of my success engineering department", "backfill last quarter", "why did the quality check fail?", "bring the stack up", "what changed in the warehouse?"
 allowed-tools: Bash, Read, Write, Edit, Glob, Grep, AskUserQuestion
 ---
 
@@ -8,7 +8,7 @@ allowed-tools: Bash, Read, Write, Edit, Glob, Grep, AskUserQuestion
 
 This repo is a self-hosted pipeline: any REST API → ClickHouse → Metabase.
 Pylon is the first source, not the only shape it fits. You drive it
-through `make` targets and three CLIs, never by clicking in the Metabase UI.
+through `make` targets and two CLIs, never by clicking in the Metabase UI.
 
 **Read this file, then load exactly one leaf skill for the task.** Each leaf is
 short. Loading all of them wastes context you will want for the actual work.
@@ -53,21 +53,14 @@ this repo hosts the warehouse and the instance but that work happens against
 them from the mb-cli project, and point at those skills. Do not re-derive the
 method here.
 
-What *does* stay here is the orchestration around it: `make mb-transforms`
-builds whatever `manifest.yml` declares, and `make mb-sync` runs an export. Both
-are a clean no-op when there is nothing configured. Running them is this repo's
-job; deciding what they should contain is not.
+Scheduling that work is out of scope too. The DAGs here run ingestion and check
+what it landed; nothing in this repo builds a table downstream of `raw_`.
 
 ## Shared contract
 
 **Answer first.** Lead with what the user asked, then the evidence. "Ingestion
 is healthy — last run 12 minutes ago, 340 issues, all checks passed" beats a
 transcript of five commands.
-
-**The repo is the source of truth.** Transforms come from
-`metabase/transforms/manifest.yml` and its SQL files. A transform edited in the
-Metabase UI is overwritten by the next `mbx transforms` run — that is intended.
-If a user has UI changes worth keeping, port them into the repo first.
 
 **Never print secrets.** `.env` holds the Pylon key, the Metabase license and
 the API key. Read it only to check whether a variable is *set*, and never echo a
@@ -76,22 +69,22 @@ value or paste one into a command line that gets logged.
 **Prefer `make`.** Targets carry the right flags, the right container and the
 right ordering. `make help` lists them. Reach past make only when diagnosing.
 
-**Say what you did not check.** "Ingest looks fine, I did not look at the
-transform layer" is useful. Implying full coverage you did not verify is not.
+**Say what you did not check.** "Ingest looks fine, I did not look at whether the
+quality checks ran" is useful. Implying full coverage you did not verify is not.
 
 ## The five-second orientation
 
 ```
 raw_<source>.* one database per source, loaded by dlt, merged on the primary key
-analytics.*    base_ -> dim_ -> fact_ -> metrics_, built by Metabase transforms
-ops.*          gx_results, pipeline_runs, mb_transform_runs
+analytics.*    owned by the modeling project; nothing here writes it
+ops.*          gx_results, pipeline_runs
 ```
 
 A source is `sources/<name>.yml` — what the API is, how it pages, what is
 incremental, when it runs. `raw_pylon` is simply the first one.
 
-- `pylon` ingests. `dq` validates. `mbx` builds whatever the manifest declares.
-  `mb` is the Metabase CLI, and owns everything about how Metabase is used.
+- `ingest` ingests. `dq` validates. `mb` is the Metabase CLI, used by bootstrap
+  to provision the instance, and it owns everything about how Metabase is used.
 - Airflow runs all of it hourly; each source has a pool of one, so its runs
   cannot race that source's incremental cursor.
 - Anything long-running belongs in a DAG, not in your shell.

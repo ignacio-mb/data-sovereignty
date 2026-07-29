@@ -9,9 +9,10 @@ from dotenv import load_dotenv
 
 log = logging.getLogger(__name__)
 
+# One entry per source. The namespace grows with the connectors, not with the
+# layers: everything downstream of raw is another project's to validate.
 CHECKPOINTS = {
     "raw_pylon": "suites.raw_pylon",
-    "marts": "suites.marts",
 }
 
 
@@ -38,19 +39,6 @@ def ops_init():
 
     for table in init():
         click.echo(f"ready: {table}")
-
-
-@cli.command("ops-sync")
-@click.option("--limit", default=200, show_default=True, help="How many recent runs to pull.")
-def ops_sync_command(limit):
-    """Mirror Metabase transform run history into ops.mb_transform_runs."""
-    from .ops_sync import MbError, sync
-
-    try:
-        count = sync(limit=limit)
-    except MbError as exc:
-        raise click.ClickException(str(exc)) from exc
-    click.echo(f"synced {count} transform runs")
 
 
 @cli.command("record-run")
@@ -90,12 +78,7 @@ def run(checkpoint, fail_on_error):
     from . import results as results_module
     from .context import build_checkpoint, build_context
 
-    if checkpoint == "raw_pylon":
-        suites = _raw_suites()
-    else:
-        from .suites.marts import build as build_suites
-
-        suites = build_suites()
+    suites = _raw_suites()
 
     if not suites:
         click.echo(f"{checkpoint}: nothing to validate yet")
@@ -112,9 +95,7 @@ def run(checkpoint, fail_on_error):
         raise click.ClickException(
             f"{checkpoint}: the tables to validate are not in the warehouse yet.\n"
             f"  {exc}\n"
-            + ("Run `make ingest` first."
-               if checkpoint == "raw_pylon"
-               else "Run `make mb-transforms` first.")
+            "Run `make ingest` first."
         ) from exc
     log.info("running checkpoint %s over %d asset(s)", checkpoint, len(suites))
     result = gx_checkpoint.run()

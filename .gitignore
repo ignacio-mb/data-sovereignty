@@ -35,7 +35,6 @@ node_modules/
 # Runtime state (rebuildable)
 airflow/logs/
 quality/gx_output/
-metabase/.state/
 .scratch/
 
 # Claude Code local state — .claude/skills/ IS tracked
@@ -44,9 +43,6 @@ metabase/.state/
 
 # OS
 .DS_Store
-
-# A locally packed mb-cli; the .gitkeep beside it is tracked
-docker/airflow/vendor/*.tgz
 
 # Local run logs from interactive work
 .ingest.log

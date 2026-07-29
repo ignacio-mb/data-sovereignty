@@ -4,8 +4,8 @@
 # use it:
 #   1. wait for it to be healthy
 #   2. run the setup wizard, unless it has already been run
-#   3. provision an API key and write it into .env for mb / mbx / Airflow
-#   4. verify the Enterprise license grants the features we need
+#   3. provision an API key and write it into .env for mb and the modeling project
+#   4. report which Enterprise license features the instance has
 #   5. connect the warehouse and sync its schema
 #
 # Idempotent. Re-running skips the wizard, keeps a working API key, and reuses
@@ -190,8 +190,10 @@ fi
 # Everything below authenticates as mb, via MB_URL + MB_API_KEY in the environment.
 
 # ─── 4. License check ────────────────────────────────────────────────────────
-# Enterprise boots happily without a token and then behaves like OSS. Finding
-# that out here beats finding it out when `mbx transforms` fails.
+# Informational. Enterprise boots happily without a token and then behaves like
+# OSS, and nothing this stack does needs one — but the operator running this
+# script is the one who owns the token, so this is where a missing one should
+# surface, not in the project that later discovers it cannot build a transform.
 
 echo "==> Checking Enterprise license features"
 FEATURES="$(mb setting get token-features --json --max-bytes 0 \
@@ -204,8 +206,8 @@ for feature in transforms-basic remote_sync library; do
 done
 if (( ${#missing[@]} )); then
   warn "license is missing: ${missing[*]}"
-  warn "transforms, git-sync and the Library will not work until MB_PREMIUM_EMBEDDING_TOKEN is a"
-  warn "valid production token. The rest of the stack still comes up."
+  warn "the modeling project needs these; this stack does not. Ingestion, quality and the"
+  warn "warehouse all work as they are — set a valid MB_PREMIUM_EMBEDDING_TOKEN before modeling."
 else
   note "transforms-basic, remote_sync and library all present"
 fi
@@ -285,7 +287,7 @@ Metabase is ready.
 
   UI          ${MB_URL}
   Admin       ${MB_ADMIN_EMAIL}
-  Warehouse   '${WAREHOUSE_MB_NAME}' (id ${DB_ID}) -> schemas raw_pylon, analytics, ops
+  Warehouse   '${WAREHOUSE_MB_NAME}' (id ${DB_ID}) -> databases raw_pylon, analytics, ops
 
-Next: make mb-audit
+Next: make smoke
 EOF

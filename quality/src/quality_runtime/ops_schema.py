@@ -1,8 +1,8 @@
 """The ops database: what the pipeline knows about itself.
 
-Everything in here is read by the Metabase "Pipeline Health" dashboard, which is
-the point — pipeline observability belongs in the BI tool, next to the data it
-describes, not in a separate console.
+Every quality verdict and every ingest run lands here, in the warehouse rather
+than in a log the pipeline throws away — so the history is queryable from
+Metabase alongside the data it describes, or from `make ch`.
 
 DDL lives in code (not in warehouse/init/) so it can evolve without recreating
 the warehouse volume. Every statement is IF NOT EXISTS; `dq ops-init` is safe to
@@ -18,10 +18,9 @@ run on every DAG run.
   for this table", which is what the two Postgres indexes did.
 * **JSON is stored as String.** ClickHouse's JSON type is still moving; a String
   column holding JSON text is portable, and Metabase reads it either way.
-* **MergeTree, not ReplacingMergeTree**, except for mb_transform_runs, which is
-  re-synced from Metabase and would otherwise accumulate a row per sync per run.
-  ReplacingMergeTree collapses on the sort key during merges; queries that must
-  not see duplicates before a merge use FINAL.
+* **MergeTree, not ReplacingMergeTree.** Both tables are append-only logs with
+  nothing to collapse on: a second row for the same key is a second event, not a
+  restatement of the first.
 """
 
 import logging
@@ -86,23 +85,6 @@ STATEMENTS = [
     ) ENGINE = MergeTree
     ORDER BY recorded_at
     """,
-
-    # Mirror of Metabase's own transform run history, pulled through `mb`. Kept
-    # here so one dashboard can join ingest, quality and modeling on a timeline
-    # without querying the Metabase application database.
-    f"""
-    CREATE TABLE IF NOT EXISTS {OPS_SCHEMA}.mb_transform_runs (
-        run_id          Int64,
-        transform_id    Nullable(Int64),
-        transform_name  Nullable(String),
-        status          Nullable(String),
-        started_at      Nullable(DateTime64(6, 'UTC')),
-        ended_at        Nullable(DateTime64(6, 'UTC')),
-        message         Nullable(String),
-        synced_at       DateTime64(6, 'UTC') DEFAULT now64(6)
-    ) ENGINE = ReplacingMergeTree(synced_at)
-    ORDER BY run_id
-    """,
 ]
 
 
@@ -117,5 +99,4 @@ def init():
     return [
         f"{OPS_SCHEMA}.gx_results",
         f"{OPS_SCHEMA}.pipeline_runs",
-        f"{OPS_SCHEMA}.mb_transform_runs",
     ]

@@ -51,19 +51,14 @@ x-airflow-env: &airflow-env
   DESTINATION__CLICKHOUSE__CREDENTIALS__DATABASE: raw_pylon
   DESTINATION__CLICKHOUSE__CREDENTIALS__SECURE: '0'
 
-  # ── Metabase CLI ──
+  # ── Metabase ──
+  # On the compose network, not the published port: the smoke DAG probes this
+  # to prove the instance this stack hosts is up.
   MB_URL: http://metabase:3000
-  MB_API_KEY: ${MB_API_KEY}
-  MB_CLI_DISABLE_KEYRING: '1'
 
   # ── Data quality ──
   GX_FRESHNESS_HOURS: ${GX_FRESHNESS_HOURS:-24}
   GX_DOCS_DIR: /opt/project/quality/gx_output/data_docs
-
-  # ── Metabase content git-sync (optional) ──
-  MB_GIT_SYNC_URL: ${MB_GIT_SYNC_URL:-}
-  MB_GIT_SYNC_BRANCH: ${MB_GIT_SYNC_BRANCH:-main}
-  MB_GIT_SYNC_PAT: ${MB_GIT_SYNC_PAT:-}
 
 x-airflow-common: &airflow-common
   build:
@@ -83,9 +78,6 @@ x-airflow-common: &airflow-common
     # without a rebuild. Dependency changes still need `make build`.
     - ./pipeline:/opt/project/pipeline
     - ./quality:/opt/project/quality
-    - ./metabase:/opt/project/metabase
-    # Stop-gate deliverables are written by `mbx audit` and reviewed in git.
-    - ./docs:/opt/project/docs
     - dlt-state:/opt/dlt-state
   depends_on:
     warehouse-db:
@@ -113,7 +105,7 @@ x-airflow-service: &airflow-service
 
 services:
 
-  # The warehouse. raw_pylon (dlt), analytics (Metabase transforms), ops (dq).
+  # The warehouse. raw_<source> (dlt), analytics (the modeling project), ops (dq).
   warehouse-db:
     image: ${CLICKHOUSE_IMAGE:-clickhouse/clickhouse-server:24.8-alpine}
     restart: unless-stopped
@@ -299,8 +291,8 @@ services:
       retries: 5
       start_period: 30s
 
-  # The execution seam for one-off commands: pylon, dq, mbx, mb and airflow are
-  # all on PATH here. `make` uses this for everything it runs.
+  # The execution seam for one-off commands: ingest, dq and airflow are all on
+  # PATH here. `make` uses this for everything it runs.
   airflow-cli:
     <<: *airflow-common
     profiles: ["cli"]

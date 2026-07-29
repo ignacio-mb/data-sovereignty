@@ -7,13 +7,12 @@ Nothing leaves your machine except the calls to the APIs you connect and the
 Metabase license check.
 
 ```
-any REST API ──(dlt)──▶ ClickHouse ──(Metabase transforms)──▶ semantic layer
+any REST API ──(dlt)──▶ ClickHouse ──▶ Metabase
                         ├─ raw_<source>.*  one database per source
-                        ├─ analytics.*     base_ → dim_ → fact_ → metrics_
                         └─ ops.*           quality results, run history
 
-Airflow schedules it. Great Expectations verifies it. Metabase models and
-serves it. Claude Code operates all of it through .claude/skills.
+Airflow schedules it. Great Expectations verifies it. Metabase serves it.
+Claude Code operates all of it through .claude/skills.
 ```
 
 Every component is open source and self-hosted: [dlt](https://dlthub.com),
@@ -22,12 +21,12 @@ Every component is open source and self-hosted: [dlt](https://dlthub.com),
 [Metabase](https://github.com/metabase/metabase),
 [ClickHouse](https://github.com/ClickHouse/ClickHouse), Docker.
 
-**One caveat about "fully open source."** Metabase is open source, but
-*transforms*, the *Library* and *git-sync* are Enterprise features behind a
-license token. Everything up to and including the warehouse — ingestion,
-scheduling, quality, the `ops` observability schema — needs no token. Without
-one, Metabase still boots and charts your data; it just won't build the modeled
-layer. `make mb-audit` tells you which side of that line you're on.
+**One caveat about "fully open source."** Everything this repo does — ingestion,
+scheduling, quality, the `ops` observability schema, hosting the instance —
+needs no license token, and Metabase boots and charts your data without one.
+A token only matters for what the *modeling project* can do inside Metabase:
+*transforms*, the *Library* and *git-sync* are Enterprise features. `make
+bootstrap` reports which side of that line the instance is on.
 
 ## Quick start
 
@@ -42,7 +41,6 @@ connecting), `MB_PREMIUM_EMBEDDING_TOKEN` (your Metabase licence), and
 ```bash
 make build    # build the Airflow image (~5 min the first time)
 make up       # start services, bootstrap Metabase, provision an API key
-make mb-audit # confirm the licence grants transforms, remote_sync and library
 make ingest   # first ingest
 ```
 
@@ -94,10 +92,9 @@ them in `.env`.
 |---|---|
 | `make ingest` | Trigger the ingest DAG now |
 | `make backfill START=2026-01-01` | Backfill a date range |
-| `make quality` | Run the raw + mart data-quality checkpoints |
+| `make quality` | Run the raw data-quality checkpoint |
 | `make status` | Service health and URLs |
 | `make ch` | A clickhouse-client shell on the warehouse |
-| `make mb-transforms` | Rebuild the transform layer from the manifest |
 | `make test` | Offline test suite (mocked APIs, no network) |
 | `make nuke` | Destroy everything, including data |
 
@@ -138,7 +135,6 @@ tunnel (`make tunnels`).
 | `sources/` | One YAML per connector — the source contract |
 | `pipeline/` | The ingestion runtime and CLI |
 | `quality/` | Great Expectations suites and the `dq` CLI |
-| `metabase/` | Transform manifest + SQL, and the `mbx` CLI |
 | `airflow/dags/` | Ingest, backfill and reconcile DAGs |
 | `terraform/` | The AWS host |
 | `.claude/skills/` | How Claude operates this stack |
@@ -159,9 +155,10 @@ it replaces. Still to come: quality suites generated from a spec's `quality`
 block, and per-source DAG generation. Until those land, a second source produces
 a valid spec whose DAG and checkpoint have to be written by hand.
 
-**Modeling is not this repo's job.** It runs the platform — ingestion,
-orchestration, hosting, and the Metabase instance. Authoring transforms, metrics
-and dashboards happens in a separate project driven by `mb-cli`, which ships its
-own skills for it (`mb skills get data-workflow`). The `manifest.yml` contract
-and `mbx transforms` stay here as the orchestration seam — the hourly DAG builds
-whatever the manifest declares — but what goes in it is decided elsewhere.
+**Modeling is not this repo's job, and neither is scheduling it.** What lives
+here is ingestion, the orchestration of ingestion, quality on the raw layer, the
+warehouse, and the Metabase instance itself. Transforms, metrics, dashboards and
+the runs that build them belong to a separate project driven by `mb-cli`, which
+ships its own skills for the work (`mb skills get data-workflow`). The seam
+between the two is the warehouse: this repo lands trustworthy raw tables and
+hands over a provisioned instance pointed at them.

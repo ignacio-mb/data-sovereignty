@@ -145,8 +145,8 @@ variable "repo_branch" {
 variable "mb_cli_version" {
   description = <<-EOT
     scripts/bootstrap_metabase.sh runs on the HOST and needs `mb`, so the
-    instance installs it globally. Keep this pinned to the same version as
-    MB_CLI_SPEC in docker/airflow/Dockerfile or the host and the image drift.
+    instance installs it globally. Nothing in the Airflow image uses it — this
+    is the only copy, and the only place its version is decided.
   EOT
   type        = string
   default     = "0.2.2"

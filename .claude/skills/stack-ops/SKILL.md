@@ -27,12 +27,14 @@ can avoid it — tell them to edit `.env` directly, then continue.
 ```bash
 make build   # ~5-10 min the first time
 make up      # starts services, bootstraps Metabase, provisions an API key
-make mb-audit
 ```
 
-`make mb-audit` is the gate. If it fails on missing token features, the license
-is not a valid production Enterprise token and modeling cannot proceed — say so
-plainly rather than working around it.
+`make bootstrap` (which `make up` runs, and which is safe to re-run on its own)
+is the gate: it is what proves the instance is provisioned — set up, holding a
+working API key, and connected to the warehouse. It also reports the licence's
+token features. Missing features are not a blocker here; nothing in this stack
+needs them. Say plainly that the instance is effectively OSS and that modeling
+against it will not work until the token is valid.
 
 ## Daily
 
@@ -45,10 +47,11 @@ make down          # stop, keep all data
 ## Things that will confuse you
 
 **`make up` is staged and the order matters.** Metabase must be bootstrapped and
-`MB_API_KEY` written to `.env` before the Airflow containers start, or they
-inherit an empty key and every transform task fails on auth. A bare
-`docker compose up -d` skips that. The fix is always `make up` again — it
-recreates the containers with the now-populated environment.
+`MB_API_KEY` written to `.env` before the Airflow containers start: container
+environments are frozen at create time, so anything started first carries the
+pre-bootstrap `.env` until it is recreated. A bare `docker compose up -d` skips
+the ordering. The fix is always `make up` again — it recreates the containers
+with the now-populated environment.
 
 **Init SQL runs once.** `warehouse/init/*.sql` only executes on first
 initialization of an empty volume. Editing it does nothing to a running stack.

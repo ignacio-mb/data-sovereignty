@@ -4,7 +4,7 @@ One source of truth: whatever loaded the data is what we validate against, on
 the host (localhost, published ports) and in a container (warehouse-db, internal
 ports) alike.
 
-ClickHouse has no schemas — a "schema" is a database — so the three names below
+ClickHouse has no schemas — a "schema" is a database — so the two names below
 are databases. Everything qualifies its table names, so which one the connection
 happens to select is immaterial.
 """
@@ -13,12 +13,10 @@ import os
 from pathlib import Path
 
 RAW_SCHEMA = "raw_pylon"
-ANALYTICS_SCHEMA = "analytics"
 OPS_SCHEMA = "ops"
 
 # Repo root as seen from this package: quality/src/quality_runtime -> repo root.
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
-MANIFEST_PATH = PROJECT_ROOT / "metabase" / "transforms" / "manifest.yml"
 
 _PREFIX = "DESTINATION__CLICKHOUSE__CREDENTIALS__"
 _DEFAULTS = {

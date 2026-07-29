@@ -1,6 +1,6 @@
 ---
 name: pipeline-status
-description: Answer "is the pipeline healthy?" end to end — services, recent runs, freshness, data-quality verdicts, and transform history. Triggers — "is my pipeline healthy?", "verify the whole state", "what's the status?", "is the data fresh?", "did last night's run work?", "what's broken?".
+description: Answer "is the pipeline healthy?" end to end — services, recent runs, freshness, and data-quality verdicts. Triggers — "is my pipeline healthy?", "verify the whole state", "what's the status?", "is the data fresh?", "did last night's run work?", "what's broken?".
 allowed-tools: Bash, Read
 ---
 
@@ -51,12 +51,7 @@ UNION ALL
 SELECT 'quality (24h)',
        to_char(max(validated_at), 'YYYY-MM-DD HH24:MI'),
        count(*) FILTER (WHERE NOT success) || ' failed of ' || count(*)
-  FROM ops.gx_results WHERE validated_at > now() - interval '24 hours'
-UNION ALL
-SELECT 'transforms',
-       to_char(max(started_at), 'YYYY-MM-DD HH24:MI'),
-       count(*) FILTER (WHERE status <> 'succeeded') || ' not succeeded of ' || count(*)
-  FROM ops.mb_transform_runs WHERE started_at > now() - interval '24 hours';
+  FROM ops.gx_results WHERE validated_at > now() - interval '24 hours';
 SQL
 ```
 
@@ -68,18 +63,7 @@ SELECT asset, expectation, column_name, observed_value
   FROM ops.gx_results
  WHERE NOT success AND validated_at > now() - interval '24 hours'
  ORDER BY validated_at DESC LIMIT 20;
-
--- transforms that did not succeed
-SELECT transform_name, status, started_at, message
-  FROM ops.mb_transform_runs
- WHERE status <> 'succeeded' ORDER BY started_at DESC LIMIT 10;
 ```
-
-## 4. Point them at the dashboard
-
-Everything above is also the **Pipeline Health** dashboard in Metabase
-(http://localhost:3100). Mention it — the user should not need to ask you next
-time.
 
 ## Reading the signals honestly
 
@@ -92,11 +76,7 @@ data means the pipeline is broken.
 **Zero rows in `ops.*` means nothing has run yet**, not that everything is fine.
 Say "no runs recorded yet" rather than reporting green.
 
-**Transform statuses understate damage.** When a transform fails, the ones
-downstream are *skipped* and keep their previous status — often `succeeded`. One
-failure near the base of the stack can leave a dozen stale tables all reporting
-success. If anything failed, treat everything downstream of it as suspect.
-
-**Passing quality checks only cover what is declared.** They verify grain,
-nulls, freshness and the declared reconciliations — not that a number is
-business-correct. Do not translate "all checks passed" into "the data is right".
+**Passing quality checks only cover what is declared.** They verify identity,
+nulls, freshness and the declared referential checks on the raw layer — not that
+a number is business-correct, and nothing at all about tables built from it
+elsewhere. Do not translate "all checks passed" into "the data is right".

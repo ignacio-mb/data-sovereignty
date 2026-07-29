@@ -43,11 +43,6 @@ REQUIRED=(
   AIRFLOW_PASSWORD
   AIRFLOW_DB
 )
-OPTIONAL=(
-  MB_GIT_SYNC_URL
-  MB_GIT_SYNC_BRANCH
-  MB_GIT_SYNC_PAT
-)
 
 # Read a value from .env without sourcing the file or ever echoing it.
 value_of() {
@@ -70,15 +65,6 @@ for key in "${REQUIRED[@]}"; do
   v="$(value_of "$key")"
   if [[ -z "$v" ]]; then
     missing+=("$key")
-    continue
-  fi
-  put "$key" "$v"
-done
-
-for key in "${OPTIONAL[@]}"; do
-  v="$(value_of "$key")"
-  if [[ -z "$v" ]]; then
-    echo "secrets_push: $key is empty, skipping"
     continue
   fi
   put "$key" "$v"

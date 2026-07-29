@@ -3,9 +3,8 @@
 import types
 
 import pytest
-import yaml
 from quality_runtime import config, results
-from quality_runtime.suites import marts, raw_pylon
+from quality_runtime.suites import raw_pylon
 
 
 def expectation_types(expectations):
@@ -14,20 +13,6 @@ def expectation_types(expectations):
 
 def descriptions(expectations):
     return [expectation.description or "" for expectation in expectations]
-
-
-def columns_required_present(expectations):
-    """Columns asserted non-null.
-
-    Read off the description rather than a `column` attribute: on ClickHouse
-    these are UnexpectedRowsExpectations, not GX column expectations. See
-    suites.raw_pylon.not_null for why.
-    """
-    return [
-        text.split(" is never null")[0].split(".")[-1]
-        for text in descriptions(expectations)
-        if text.endswith(" is never null")
-    ]
 
 
 class TestRawSuites:
@@ -119,68 +104,6 @@ class TestRawSuitesAgainstWhatLanded:
         # Everything else in raw_pylon is meaningless without it, so it must not
         # be skippable the way an empty directory resource is.
         assert raw_pylon.REQUIRED_TABLES == ("issues",)
-
-
-MANIFEST = {
-    "schema": "analytics",
-    "transforms": [
-        {"name": "fact_issue", "sql": "30_fact_issue.sql", "grain": ["issue_id"],
-         "not_null": ["issue_id", "account_id"]},
-        {"name": "metrics_support_daily", "sql": "40_metrics.sql",
-         "grain": ["day", "team_id"],
-         "reconciliation": [
-             {"description": "splits sum to the total",
-              "query": "SELECT 1 FROM {batch} WHERE opened <> new_issues + reopened_issues"},
-         ]},
-        {"name": "dim_date", "sql": "20_dim_date.sql"},
-    ],
-}
-
-
-class TestMartSuites:
-    def test_single_column_grain_is_checked_as_sql_too(self):
-        """Both arities take the GROUP BY ... HAVING form.
-
-        The native uniqueness expectation reports the offending values and would
-        be preferable, but it does not compile on ClickHouse.
-        """
-        suite = marts.build(MANIFEST)[("analytics", "fact_issue")]
-        assert "expect_column_values_to_be_unique" not in expectation_types(suite)
-        assert any("grain (issue_id) is unique" in text for text in descriptions(suite))
-
-    def test_compound_grain_is_checked_as_a_whole(self):
-        suite = marts.build(MANIFEST)[("analytics", "metrics_support_daily")]
-        # A per-column uniqueness check would be wrong here: day alone repeats.
-        assert any("grain (day, team_id) is unique" in text for text in descriptions(suite))
-        assert not any(text.startswith("day is unique") for text in descriptions(suite))
-
-    def test_grain_columns_are_also_required_to_be_present(self):
-        suite = marts.build(MANIFEST)[("analytics", "metrics_support_daily")]
-        not_null = columns_required_present(suite)
-        assert set(not_null) == {"day", "team_id"}
-
-    def test_not_null_does_not_duplicate_grain_columns(self):
-        suite = marts.build(MANIFEST)[("analytics", "fact_issue")]
-        not_null = columns_required_present(suite)
-        assert sorted(not_null) == ["account_id", "issue_id"]
-
-    def test_reconciliation_identities_become_expectations(self):
-        suite = marts.build(MANIFEST)[("analytics", "metrics_support_daily")]
-        assert any("splits sum to the total" in text for text in descriptions(suite))
-
-    def test_a_transform_without_a_grain_still_gets_a_suite(self):
-        suite = marts.build(MANIFEST)[("analytics", "dim_date")]
-        assert "expect_table_row_count_to_be_between" in expectation_types(suite)
-
-    def test_missing_manifest_is_not_an_error(self, tmp_path):
-        manifest = marts.load_manifest(tmp_path / "absent.yml")
-        assert manifest["transforms"] == []
-        assert marts.build(manifest) == {}
-
-    def test_manifest_round_trips_from_disk(self, tmp_path):
-        path = tmp_path / "manifest.yml"
-        path.write_text(yaml.safe_dump(MANIFEST))
-        assert marts.build(marts.load_manifest(path)).keys() == marts.build(MANIFEST).keys()
 
 
 class TestExceptionSummary:

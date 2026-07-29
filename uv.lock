@@ -16,7 +16,6 @@ resolution-markers = [
 [manifest]
 members = [
     "data-sovereignty",
-    "mb-tools",
     "ingest-runtime",
     "quality-runtime",
 ]
@@ -1044,7 +1043,6 @@ name = "data-sovereignty"
 version = "0.1.0"
 source = { virtual = "." }
 dependencies = [
-    { name = "mb-tools" },
     { name = "ingest-runtime" },
     { name = "quality-runtime" },
 ]
@@ -1062,7 +1060,6 @@ dev = [
 
 [package.metadata]
 requires-dist = [
-    { name = "mb-tools", editable = "metabase" },
     { name = "ingest-runtime", editable = "pipeline" },
     { name = "quality-runtime", editable = "quality" },
 ]
@@ -1786,6 +1783,45 @@ wheels = [
 ]
 
 [[package]]
+name = "ingest-runtime"
+version = "0.1.0"
+source = { editable = "pipeline" }
+dependencies = [
+    { name = "beautifulsoup4" },
+    { name = "click" },
+    { name = "dlt", extra = ["clickhouse"] },
+    { name = "pendulum" },
+    { name = "python-dotenv" },
+    { name = "pyyaml" },
+]
+
+[package.dev-dependencies]
+dev = [
+    { name = "dlt", extra = ["duckdb"] },
+    { name = "pytest" },
+    { name = "requests-mock" },
+    { name = "ruff" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "beautifulsoup4", specifier = ">=4.12" },
+    { name = "click", specifier = ">=8.1" },
+    { name = "dlt", extras = ["clickhouse"], specifier = ">=1.28.1,<2" },
+    { name = "pendulum", specifier = ">=3.0" },
+    { name = "python-dotenv", specifier = ">=1.0" },
+    { name = "pyyaml", specifier = ">=6" },
+]
+
+[package.metadata.requires-dev]
+dev = [
+    { name = "dlt", extras = ["duckdb"], specifier = ">=1.28.1,<2" },
+    { name = "pytest", specifier = ">=8" },
+    { name = "requests-mock", specifier = ">=1.12" },
+    { name = "ruff", specifier = ">=0.6" },
+]
+
+[[package]]
 name = "iniconfig"
 version = "2.3.0"
 source = { registry = "https://pypi.org/simple" }
@@ -2114,23 +2150,6 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/55/79/de6c16cc902f4fc372236926b0ce2ab7845268dcc30fb2fbb7f71b418631/marshmallow-3.26.2.tar.gz", hash = "sha256:bbe2adb5a03e6e3571b573f42527c6fe926e17467833660bebd11593ab8dfd57", size = 222095, upload-time = "2025-12-22T06:53:53.309Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/be/2f/5108cb3ee4ba6501748c4908b908e55f42a5b66245b4cfe0c99326e1ef6e/marshmallow-3.26.2-py3-none-any.whl", hash = "sha256:013fa8a3c4c276c24d26d84ce934dc964e2aa794345a0f8c7e5a7191482c8a73", size = 50964, upload-time = "2025-12-22T06:53:51.801Z" },
-]
-
-[[package]]
-name = "mb-tools"
-version = "0.1.0"
-source = { editable = "metabase" }
-dependencies = [
-    { name = "click" },
-    { name = "python-dotenv" },
-    { name = "pyyaml" },
-]
-
-[package.metadata]
-requires-dist = [
-    { name = "click", specifier = ">=8.1" },
-    { name = "python-dotenv", specifier = ">=1.0" },
-    { name = "pyyaml", specifier = ">=6.0" },
 ]
 
 [[package]]
@@ -3082,68 +3101,6 @@ crypto = [
 ]
 
 [[package]]
-name = "ingest-runtime"
-version = "0.1.0"
-source = { editable = "pipeline" }
-dependencies = [
-    { name = "beautifulsoup4" },
-    { name = "click" },
-    { name = "dlt", extra = ["clickhouse"] },
-    { name = "pendulum" },
-    { name = "python-dotenv" },
-    { name = "pyyaml" },
-]
-
-[package.dev-dependencies]
-dev = [
-    { name = "dlt", extra = ["duckdb"] },
-    { name = "pytest" },
-    { name = "requests-mock" },
-    { name = "ruff" },
-]
-
-[package.metadata]
-requires-dist = [
-    { name = "beautifulsoup4", specifier = ">=4.12" },
-    { name = "click", specifier = ">=8.1" },
-    { name = "dlt", extras = ["clickhouse"], specifier = ">=1.28.1,<2" },
-    { name = "pendulum", specifier = ">=3.0" },
-    { name = "python-dotenv", specifier = ">=1.0" },
-    { name = "pyyaml", specifier = ">=6" },
-]
-
-[package.metadata.requires-dev]
-dev = [
-    { name = "dlt", extras = ["duckdb"], specifier = ">=1.28.1,<2" },
-    { name = "pytest", specifier = ">=8" },
-    { name = "requests-mock", specifier = ">=1.12" },
-    { name = "ruff", specifier = ">=0.6" },
-]
-
-[[package]]
-name = "quality-runtime"
-version = "0.1.0"
-source = { editable = "quality" }
-dependencies = [
-    { name = "click" },
-    { name = "clickhouse-connect" },
-    { name = "clickhouse-sqlalchemy" },
-    { name = "great-expectations" },
-    { name = "python-dotenv" },
-    { name = "pyyaml" },
-]
-
-[package.metadata]
-requires-dist = [
-    { name = "click", specifier = ">=8.1" },
-    { name = "clickhouse-connect", specifier = ">=0.8" },
-    { name = "clickhouse-sqlalchemy", specifier = ">=0.3.2,<0.4" },
-    { name = "great-expectations", specifier = "==1.19.1" },
-    { name = "python-dotenv", specifier = ">=1.0" },
-    { name = "pyyaml", specifier = ">=6.0" },
-]
-
-[[package]]
 name = "pyparsing"
 version = "3.3.2"
 source = { registry = "https://pypi.org/simple" }
@@ -3306,6 +3263,29 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/05/10/f42c48fa5153204f42eaa945e8d1fd7c10d6296841dcb2447bf7da1be5c4/pyyaml_ft-8.0.0-cp313-cp313t-musllinux_1_2_aarch64.whl", hash = "sha256:052561b89d5b2a8e1289f326d060e794c21fa068aa11255fe71d65baf18a632e", size = 810403, upload-time = "2025-06-10T15:32:11.051Z" },
     { url = "https://files.pythonhosted.org/packages/d5/d2/e369064aa51009eb9245399fd8ad2c562bd0bcd392a00be44b2a824ded7c/pyyaml_ft-8.0.0-cp313-cp313t-musllinux_1_2_x86_64.whl", hash = "sha256:3bb4b927929b0cb162fb1605392a321e3333e48ce616cdcfa04a839271373255", size = 835581, upload-time = "2025-06-10T15:32:12.897Z" },
     { url = "https://files.pythonhosted.org/packages/c0/28/26534bed77109632a956977f60d8519049f545abc39215d086e33a61f1f2/pyyaml_ft-8.0.0-cp313-cp313t-win_amd64.whl", hash = "sha256:de04cfe9439565e32f178106c51dd6ca61afaa2907d143835d501d84703d3793", size = 171579, upload-time = "2025-06-10T15:32:14.34Z" },
+]
+
+[[package]]
+name = "quality-runtime"
+version = "0.1.0"
+source = { editable = "quality" }
+dependencies = [
+    { name = "click" },
+    { name = "clickhouse-connect" },
+    { name = "clickhouse-sqlalchemy" },
+    { name = "great-expectations" },
+    { name = "python-dotenv" },
+    { name = "pyyaml" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "click", specifier = ">=8.1" },
+    { name = "clickhouse-connect", specifier = ">=0.8" },
+    { name = "clickhouse-sqlalchemy", specifier = ">=0.3.2,<0.4" },
+    { name = "great-expectations", specifier = "==1.19.1" },
+    { name = "python-dotenv", specifier = ">=1.0" },
+    { name = "pyyaml", specifier = ">=6.0" },
 ]
 
 [[package]]

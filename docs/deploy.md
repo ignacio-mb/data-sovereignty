@@ -180,7 +180,7 @@ secret in `.env`. The controls above bound that. They do not remove it.
 
 ## Day to day
 
-**Changing SQL, DAGs, suites, the manifest, or Python.** Merge. Those paths are
+**Changing SQL, DAGs, suites, or Python.** Merge. Those paths are
 bind-mounted and the packages are installed editable, so the change is live
 without a rebuild; the dag-processor re-parses on its own.
 
@@ -227,7 +227,7 @@ The Actions job tells you which stage and translates the instance's exit code:
 | | |
 |---|---|
 | deferred (76) | Work was in flight. Nothing happened; the converge timer retries within five minutes. |
-| refused (77) | `.env` is missing a key compose needs, or a vendored mb-cli tarball is sitting in `docker/airflow/vendor/`. |
+| refused (77) | `.env` is missing a key compose needs, and re-rendering from Parameter Store did not supply it. |
 | rejected (78) | That commit is not an ancestor of `main`. |
 | on hold (79) | A `HOLD` file, or the checkout is on some other branch. |
 | build failed | The live stack was never touched. Fix and merge again. |
@@ -257,8 +257,8 @@ sudo /usr/local/bin/ds-deploy --sha <good-sha>
 ```
 
 **This rolls back code, not data.** The warehouse, the dlt cursor and the
-Airflow metadata database are forward-only. A transform's output can be
-rebuilt; a `--mark-deleted` reconcile cannot be un-run.
+Airflow metadata database are forward-only. A missed ingest is picked up by the
+next run; a `--mark-deleted` reconcile cannot be un-run.
 
 ## Losing the instance
 
@@ -294,13 +294,7 @@ ssh -t data-sovereignty tmux new -A -s ops
 A dropped SSM session then leaves the work running. Remember the checkout is a
 deploy target: `make hold` before anything that would be undone by a merge.
 
-## Two things that stay on the laptop
-
-**`make mb-cli-local`.** It needs an mb-cli checkout and `bun`, which the
-instance does not have, and it writes a git-ignored tarball that the Dockerfile
-prefers over the pinned published CLI. A deploy refuses outright if it finds
-one on the instance, rather than silently building against something that never
-went through review.
+## One thing that stays on the laptop
 
 **Schema evolution.** dlt writes the inferred schema to
 `/opt/dlt-state/schemas` on the instance rather than into the checkout, so an

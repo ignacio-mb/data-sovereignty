@@ -2,12 +2,11 @@ SHELL := /usr/bin/env bash
 .DEFAULT_GOAL := help
 
 COMPOSE := docker compose
-# Run one-off commands in the Airflow image: it has ingest, dq, mbx and mb on PATH.
+# Run one-off commands in the Airflow image: it has ingest and dq on PATH.
 RUN := $(COMPOSE) --profile cli run --rm airflow-cli
 
 .PHONY: help env up down nuke bootstrap ingest backfill quality docs status logs ch \
-        test test-warehouse build mb-audit mb-transforms mb-semantics mb-metadata \
-        mb-dashboards mb-sync smoke secrets-push secrets-pull remote tunnels \
+        test test-warehouse build smoke secrets-push secrets-pull remote tunnels \
         deploy-status hold unhold disk
 
 help: ## Show this help
@@ -22,26 +21,8 @@ env: ## Create .env from .env.example and generate Airflow secrets
 	@bash scripts/gen_secrets.sh .env
 	@echo "Now fill in PYLON_API_KEY, MB_PREMIUM_EMBEDDING_TOKEN and MB_ADMIN_PASSWORD."
 
-build: ## Build the Airflow image (ingest + dq + mbx + mb)
+build: ## Build the Airflow image (ingest + dq)
 	$(COMPOSE) build
-
-# Where your mb-cli working copy lives. Only used by mb-cli-local.
-MB_CLI_SRC ?= $(HOME)/dev/mb-cli/mb-cli
-
-mb-cli-local: ## Rebuild the image against your local mb-cli checkout (MB_CLI_SRC=...)
-	@test -f "$(MB_CLI_SRC)/package.json" || \
-	  (echo "no mb-cli at $(MB_CLI_SRC) — pass MB_CLI_SRC=/path/to/mb-cli"; exit 2)
-	rm -f docker/airflow/vendor/*.tgz
-	cd "$(MB_CLI_SRC)" && bun install && bun run build && \
-	  npm pack --pack-destination "$(CURDIR)/docker/airflow/vendor"
-	@echo "packed: $$(ls docker/airflow/vendor/*.tgz)"
-	$(COMPOSE) build
-	@$(RUN) mb --version
-
-mb-cli-published: ## Go back to the pinned published @metabase/cli
-	rm -f docker/airflow/vendor/*.tgz
-	$(COMPOSE) build
-	@$(RUN) mb --version
 
 up: ## Bring the stack up in stages and bootstrap Metabase
 	$(COMPOSE) up -d --wait warehouse-db metabase-app-db airflow-db metabase
@@ -70,32 +51,11 @@ backfill: ## Trigger a backfill: make backfill START=2026-01-01 [END=2026-02-01]
 	$(RUN) airflow dags trigger pylon_backfill \
 		--conf '{"start":"$(START)","end":"$(END)"}'
 
-quality: ## Run both data-quality checkpoints
+quality: ## Run the raw data-quality checkpoint
 	$(RUN) dq run --checkpoint raw_pylon
-	$(RUN) dq run --checkpoint marts
 
 docs: ## Rebuild Great Expectations data docs (served on $$DATADOCS_HOST_PORT)
 	$(RUN) dq docs-build
-
-# ─── Metabase ────────────────────────────────────────────────────────────────
-
-mb-audit: ## Verify Metabase version + EE token features, write docs/10_instance_capabilities.md
-	$(RUN) mbx audit
-
-mb-transforms: ## Build/refresh all transforms from metabase/transforms/manifest.yml
-	$(RUN) mbx transforms
-
-mb-semantics: ## Create/update metrics and segments
-	$(RUN) mbx semantics
-
-mb-metadata: ## Apply display names, semantic types and FK wiring
-	$(RUN) mbx metadata
-
-mb-dashboards: ## Build the Success Engineering and Pipeline Health dashboards
-	$(RUN) mbx dashboards
-
-mb-sync: ## Export Metabase content to the git-sync repo (no-op if unconfigured)
-	$(RUN) mbx gitsync
 
 # ─── Inspection ──────────────────────────────────────────────────────────────
 

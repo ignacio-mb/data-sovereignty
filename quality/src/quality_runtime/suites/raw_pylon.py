@@ -2,8 +2,8 @@
 
 These check the ingest contract, not business meaning: primary keys behave like
 primary keys, the data is fresh, tombstones stay plausible, and children point at
-parents that exist. Anything about what the numbers *mean* belongs in the mart
-suites, after modeling.
+parents that exist. What the numbers *mean* is decided downstream of this
+warehouse, and tested there.
 """
 
 from great_expectations import expectations as gxe
