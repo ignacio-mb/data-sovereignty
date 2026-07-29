@@ -45,28 +45,64 @@
 
 schema: analytics
 
-# ── Nothing is modeled yet ───────────────────────────────────────────────────
+# ── What is modeled ──────────────────────────────────────────────────────────
 #
-# Modeling is stop-gated on real data, deliberately. The layers above are shaped
-# by what Pylon actually returns for this tenant — which custom fields are
-# populated, whether csat_responses has anything in it, whether resolution_time
-# is ever set — and none of that is knowable from the API docs.
-#
-# The sequence, once `make ingest` has run:
-#
-#   docs/00_source_inventory.md   what is actually in raw_pylon, exact counts,
-#                                 read from information_schema
-#   docs/01_gap_report.md         per requested KPI: buildable exactly,
-#                                 approximately, or not at all — honestly
-#   docs/02_assumptions.md        every judgement call as a named constant
-#                                 (FIRST_RESPONSE_TARGET_MINUTES = 60)
-#
-# Each is a stop gate: the decisions in them are the user's, not the model's.
-# Then fill in `transforms` below.
+# Shaped by what Pylon returns for THIS tenant, read off the warehouse rather
+# than off the API docs: `priority` and `question_type` are the only custom
+# fields populated, `time_in_status_seconds` carries four keys, and 9 issues
+# have no status map at all. Re-profile before assuming any of it still holds.
 #
 # The modeling itself is not this repo's job — it hosts the warehouse and the
 # instance, and builds whatever this file declares. How to decide what belongs
 # in it lives with the mb-cli project, whose skills are versioned with the
 # binary: `mb skills get data-workflow` and `mb skills get transform`.
 
-transforms: []
+transforms:
+  - name: base_issue
+    sql: 10_base_issue.sql
+    description: >
+      One row per Pylon issue with every JSON blob decoded into typed columns:
+      priority and question_type out of custom_fields, tags as an array plus a
+      delimited label, and time_in_status_seconds pivoted to one column per
+      status (wall-clock and business hours). Account, assignee and requester
+      carry their human labels alongside the ids.
+
+      Multi-value fields are both an Array(String) and a ", "-joined label —
+      Metabase cannot filter an array, so group on the label and use
+      ARRAY JOIN in SQL for per-tag breakouts. question_type additionally gets
+      one boolean per configured option; a new option in Pylon shows up in
+      question_type_label but needs a column added here.
+
+      A status key absent from the map means the issue never entered that
+      status (0); an absent map means Pylon reported no history at all (NULL),
+      which is currently 9 issues. number_of_touches is carried through but
+      Pylon reports 0 for every issue on this tenant, as do source ('manual')
+      and type ('ticket') for cardinality.
+    grain: [issue_id]
+    not_null: [issue_number, created_at, state, state_bucket, account_id, requester_id]
+    reconciliation:
+      - description: the four pivoted status columns account for every key in the source map
+        query: >
+          SELECT issue_id FROM {batch}
+          WHERE tracked_status_seconds IS NOT NULL
+            AND tracked_status_seconds != ifNull(seconds_in_open, 0)
+                                        + ifNull(seconds_in_in_progress, 0)
+                                        + ifNull(seconds_in_on_hold, 0)
+                                        + ifNull(seconds_in_waiting_on_action, 0)
+      - description: the business-hours pivot accounts for every key in its source map
+        query: >
+          SELECT issue_id FROM {batch}
+          WHERE tracked_business_status_seconds IS NOT NULL
+            AND tracked_business_status_seconds != ifNull(business_seconds_in_open, 0)
+                                                 + ifNull(business_seconds_in_in_progress, 0)
+                                                 + ifNull(business_seconds_in_on_hold, 0)
+                                                 + ifNull(business_seconds_in_waiting_on_action, 0)
+      - description: every account, assignee and requester id resolves to a row in its lookup table
+        query: >
+          SELECT issue_id FROM {batch}
+          WHERE (account_id IS NOT NULL AND account_name IS NULL)
+             OR (assignee_id IS NOT NULL AND assignee_name IS NULL)
+             OR (requester_id IS NOT NULL AND requester_name IS NULL)
+      - description: every state maps to a known bucket
+        query: >
+          SELECT issue_id FROM {batch} WHERE state_bucket = 'unknown'
