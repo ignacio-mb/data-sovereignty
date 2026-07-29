@@ -128,3 +128,147 @@ def extensions(spec):
             f"{spec.name} declares extensions: {spec.extensions!r} but {module} "
             f"does not exist. Either write it or drop the key from the spec."
         ) from error
+
+
+# ── Building the actual dlt source ───────────────────────────────────────────
+#
+# dlt ships a declarative REST source, and a spec is very nearly its config
+# already. Using it rather than a hand-written client is what makes a connector
+# a file: pagination, auth and incremental filtering are dlt's problem, and the
+# spec only has to name which of its behaviours apply.
+
+
+def _auth(spec):
+    """Auth block for dlt, reading the secret from the env var the spec names.
+
+    The token is never in the spec — only the NAME of the variable holding it.
+    That is what lets a spec live in a public repo.
+    """
+    import os
+
+    auth = spec.api["auth"]
+    kind = auth["type"]
+    token = os.environ.get(auth["token_env"], "").strip()
+    if not token:
+        raise RuntimeError(
+            f"{spec.name}: {auth['token_env']} is not set. "
+            f"Add it to .env (never to the spec)."
+        )
+    if kind == "bearer":
+        return {"type": "bearer", "token": token}
+    if kind == "api_key":
+        return {"type": "api_key", "api_key": token,
+                "name": auth.get("header", "Authorization"), "location": "header"}
+    if kind == "http_basic":
+        return {"type": "http_basic", "username": auth.get("username", token),
+                "password": auth.get("password", token)}
+    raise RuntimeError(
+        f"{spec.name}: auth type {kind!r} is not one dlt can build. "
+        f"Known: bearer, api_key, http_basic. Anything else needs an extension."
+    )
+
+
+def _paginator(spec, resource):
+    """Pagination, resource-level override falling back to the source default.
+
+    Returned as dlt's config dict rather than an object so the whole thing stays
+    inspectable — printing the config is how you debug a connector that pages
+    once and stops.
+    """
+    declared = resource.endpoint.get("paginator") or spec.pagination.get("kind")
+    if not declared:
+        # dlt's own detection. Right often enough to be a sensible default, and
+        # a source whose paging it cannot infer will say so on the first run.
+        return "auto"
+    if isinstance(declared, dict):
+        return declared
+    if declared == "cursor":
+        page = spec.pagination
+        return {
+            "type": "cursor",
+            "cursor_path": page.get("cursor_path", "meta.next_cursor"),
+            "cursor_param": page.get("cursor_param", "cursor"),
+        }
+    return declared
+
+
+def build_source(spec, selected=None, extension=None):
+    """A dlt source for `spec`, covering the resources in `selected`.
+
+    Resources whose strategy the declarative layer cannot express are handed to
+    the extension module. If the spec names one and it does not supply the
+    resource, that is an error rather than a silent omission: a connector that
+    quietly skips an endpoint looks exactly like one whose source has no data.
+    """
+    from dlt.sources.rest_api import rest_api_source
+
+    extension = extension if extension is not None else extensions(spec)
+    wanted = list(selected or spec.resource_names)
+
+    declarative, delegated = [], []
+    for name in wanted:
+        resource = spec.resource(name)
+        if resource.strategy in _DECLARATIVE_STRATEGIES:
+            declarative.append(resource)
+        else:
+            delegated.append(resource)
+
+    if delegated and extension is None:
+        names = ", ".join(r.name for r in delegated)
+        raise RuntimeError(
+            f"{spec.name}: {names} need a fetch strategy the declarative config "
+            f"cannot express, but the spec declares no `extensions` module."
+        )
+
+    sources = []
+    if declarative:
+        sources.append(rest_api_source({
+            "client": {
+                "base_url": spec.base_url,
+                "auth": _auth(spec),
+                "headers": spec.api.get("headers") or {},
+            },
+            "resource_defaults": {"write_disposition": "merge"},
+            "resources": [_resource_config(spec, r) for r in declarative],
+        }, name=spec.name))
+
+    for resource in delegated:
+        builder = getattr(extension, f"build_{resource.name}", None) or \
+            getattr(extension, "build_resource", None)
+        if builder is None:
+            raise RuntimeError(
+                f"{spec.name}: extension module supplies neither "
+                f"build_{resource.name}() nor build_resource() for "
+                f"{resource.name!r} (strategy {resource.strategy})."
+            )
+        sources.append(builder(spec, resource))
+
+    return sources
+
+
+_DECLARATIVE_STRATEGIES = {"full_refresh"}
+
+
+def _resource_config(spec, resource):
+    """One resource, as dlt's EndpointResource."""
+    endpoint = {
+        "path": resource.endpoint.get("path", f"/{resource.name}"),
+        "method": resource.endpoint.get("method", "GET"),
+        "data_selector": spec.pagination.get("data_selector"),
+        "paginator": _paginator(spec, resource),
+    }
+    page_size = resource.endpoint.get("page_size")
+    if page_size:
+        endpoint["params"] = {"limit": page_size}
+
+    return {
+        "name": resource.name,
+        "primary_key": resource.primary_key,
+        "write_disposition": resource.write_disposition,
+        "columns": column_hints(resource),
+        # Nested objects are stringified by the transformer rather than exploded
+        # into child tables, so a new field upstream cannot mint a table here.
+        "max_table_nesting": 0,
+        "endpoint": endpoint,
+        "processing_steps": [{"map": make_transformer(resource)}],
+    }
