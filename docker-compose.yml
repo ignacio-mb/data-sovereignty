@@ -126,7 +126,12 @@ services:
     healthcheck:
       # /ping answers before the server will accept queries on 9000, but it is
       # the only check that needs no credentials.
-      test: ["CMD-SHELL", "wget -qO- http://localhost:8123/ping | grep -q Ok"]
+      #
+      # 127.0.0.1, never localhost. On a host without IPv6 the name resolves to
+      # ::1 first and the check fails with "connection refused" while the server
+      # is listening perfectly well on 0.0.0.0 — a healthy warehouse reported as
+      # unhealthy, which then blocks Metabase, which depends on it.
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:8123/ping | grep -q Ok"]
       interval: 3s
       timeout: 5s
       retries: 40
@@ -211,8 +216,11 @@ services:
       - "${METABASE_HOST_PORT:-3100}:3000"
     healthcheck:
       # The image ships one HTTP client or the other depending on the build.
+      # 127.0.0.1 rather than localhost, for the reason spelled out on the
+      # warehouse healthcheck: no IPv6 on the host means the name resolves to
+      # ::1 and the check fails against a perfectly healthy service.
       test: ["CMD-SHELL",
-             "curl -fsS http://localhost:3000/api/health || wget -q -O- http://localhost:3000/api/health || exit 1"]
+             "curl -fsS http://127.0.0.1:3000/api/health || wget -q -O- http://127.0.0.1:3000/api/health || exit 1"]
       interval: 3s
       timeout: 5s
       retries: 60
@@ -254,7 +262,8 @@ services:
     ports:
       - "${AIRFLOW_HOST_PORT:-8080}:8080"
     healthcheck:
-      test: ["CMD", "curl", "--fail", "http://localhost:8080/api/v2/monitor/health"]
+      # 127.0.0.1, not localhost — see the warehouse healthcheck.
+      test: ["CMD", "curl", "--fail", "http://127.0.0.1:8080/api/v2/monitor/health"]
       interval: 10s
       timeout: 10s
       retries: 12
