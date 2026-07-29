@@ -69,8 +69,14 @@ Use `AskUserQuestion`. These are decisions, not facts:
 
 ## Phase 3 — Generate
 
-Write `sources/<name>.yml`. Read `sources/pylon.yml` first — it is the reference
-connector and its comments explain why each field exists. Then:
+Write `sources/<name>.yml`. `sources/` ships **empty** — a fresh checkout ingests
+nothing, deliberately.
+
+Read `reference/pylon.yml` in this skill's directory first. It is a complete
+worked example, kept here rather than in `sources/` so it documents the contract
+without the stack trying to run it, and its comments explain why each field
+exists. A test asserts it still parses, so it cannot rot into teaching something
+the loader rejects. Then:
 
 ```bash
 uv run python -c "from ingest_runtime import spec; print(spec.load('<name>'))"
@@ -80,13 +86,17 @@ The loader rejects unknown keys, unknown incremental strategies, a bare `true`
 for `soft_delete`, and referential edges naming tables the spec never declared.
 A spec that loads is one the runtime can act on.
 
+You do **not** write a DAG. `airflow/dags/source_dags.py` builds the ingest,
+backfill and reconcile DAGs for every spec in `sources/`, using the schedule,
+timeouts and pool the spec declares. Adding the file is the whole step.
+
 Also generate:
-- the DAG file (thin, calling the shared factory)
 - the credential: `<NAME>_API_KEY` in `.env.example` and in the secrets push list
-- a test fixture in `pipeline/tests/` modelled on `conftest.py` — a mock whose
-  handlers **implement the API's filtering and pagination**, not canned bodies.
-  That is what makes the harness worth copying: it exercises the paginator
-  against the envelope the real API actually returns.
+- a test modelled on `pipeline/tests/test_build_source.py` — a `requests_mock`
+  whose handlers **implement the API's pagination**, not canned bodies. That test
+  serves two pages precisely so the paginator is exercised rather than the first
+  response happening to be the whole dataset; a single-page mock passes while a
+  broken paginator silently truncates every real load.
 
 ### When the spec is not enough
 

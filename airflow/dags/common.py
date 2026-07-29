@@ -1,6 +1,6 @@
 """Shared pieces of the Pylon DAGs.
 
-The DAGs shell out to `pylon`, `dq` and `mbx` rather than importing them. Those
+The DAGs shell out to `ingest`, `dq` and `mbx` rather than importing them. Those
 tools live in their own virtualenv at /opt/data-venv with dlt and Great
 Expectations behind them; importing that tree into Airflow's own environment
 would mean reconciling two large, tightly-pinned dependency graphs forever.
@@ -14,7 +14,6 @@ from airflow.sdk import TriggerRule
 
 # Serializes every dlt run. Two concurrent ingests share one pipeline working
 # directory and one incremental cursor, and would interleave into nonsense.
-INGEST_POOL = "pylon_pipeline"
 
 # `mbx transforms` exits with this when the manifest declares nothing to build.
 # Duplicated rather than imported: these DAGs deliberately do not import the
@@ -30,7 +29,7 @@ NOTHING_TO_BUILD_EXIT = 99
 # ops.pipeline_runs row with it, while the DAG still reports success.
 SUMMARY_PATH = (
     "/opt/dlt-state/run-summaries/"
-    "pylon-summary-{{ run_id | replace('/', '_') | replace(':', '-') }}.json"
+    "run-summary-{{ dag.dag_id }}-{{ run_id | replace('/', '_') | replace(':', '-') }}.json"
 )
 
 DEFAULT_ARGS = {
@@ -40,22 +39,8 @@ DEFAULT_ARGS = {
 }
 
 
-# Duplicated from ingest_runtime.ingest.settings rather than imported: DAGs
-# shell out and never import the pipeline packages, which live in a separate
-# virtualenv. test_dag_integrity asserts the two stay equal — the test may
-# import what the DAG may not.
-PRODUCTION_DESTINATION = "clickhouse"
 
 
-def ingest_command(extra_args=""):
-    """`pylon ingest`, always writing a summary for the ops task to record.
-
-    `set -o pipefail` matters: without it the exit status would come from tee.
-    """
-    return (
-        "set -euo pipefail\n"
-        f"ingest run --destination {PRODUCTION_DESTINATION} --summary-json '{SUMMARY_PATH}' {extra_args}\n"
-    )
 
 
 def run_verdict():
