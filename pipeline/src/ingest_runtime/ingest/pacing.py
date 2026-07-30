@@ -1,6 +1,7 @@
 """Proactive per-endpoint-family request pacing.
 
-Pylon publishes fixed per-endpoint budgets (requests/minute). Instead of
+A spec publishes fixed per-endpoint-family budgets (requests/minute) under
+`rate_limits`, filled in from the API's own documentation. Instead of
 hammering until a 429 and sleeping on Retry-After, requests are spaced evenly:
 before each request, sleep whatever remains of the family's minimum interval
 since that family's previous request. Retry-After handling on an actual 429
@@ -25,8 +26,17 @@ class EndpointPacer:
         self.requests_made = Counter()
 
     def wait(self, family):
-        """Block until the family's budget allows another request, then record it."""
-        interval = self._interval[family]
+        """Block until the family's budget allows another request, then record it.
+
+        A family with no published budget is counted but never slept on. A spec
+        declares `rate_limits` per family and need not cover every endpoint, so an
+        undeclared one means "no limit worth pacing" — and raising here would take
+        a whole connector down over the one endpoint whose budget nobody wrote down.
+        """
+        interval = self._interval.get(family)
+        if interval is None:
+            self.requests_made[family] += 1
+            return
         last = self._last.get(family)
         if last is not None:
             remaining = interval - (self._clock() - last)

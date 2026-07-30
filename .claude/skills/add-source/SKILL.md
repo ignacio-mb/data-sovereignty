@@ -69,8 +69,14 @@ Use `AskUserQuestion`. These are decisions, not facts:
 
 ## Phase 3 — Generate
 
-Write `sources/<name>.yml`. Read `sources/pylon.yml` first — it is the reference
-connector and its comments explain why each field exists. Then:
+Write `sources/<name>.yml`. `sources/` ships **empty** — a fresh checkout ingests
+nothing, deliberately.
+
+Read `reference/pylon.yml` in this skill's directory first. It is a complete
+worked example, kept here rather than in `sources/` so it documents the contract
+without the stack trying to run it, and its comments explain why each field
+exists. A test asserts it still parses, so it cannot rot into teaching something
+the loader rejects. Then:
 
 ```bash
 uv run python -c "from ingest_runtime import spec; print(spec.load('<name>'))"
@@ -80,13 +86,17 @@ The loader rejects unknown keys, unknown incremental strategies, a bare `true`
 for `soft_delete`, and referential edges naming tables the spec never declared.
 A spec that loads is one the runtime can act on.
 
+You do **not** write a DAG. `airflow/dags/source_dags.py` builds the ingest,
+backfill and reconcile DAGs for every spec in `sources/`, using the schedule,
+timeouts and pool the spec declares. Adding the file is the whole step.
+
 Also generate:
-- the DAG file (thin, calling the shared factory)
 - the credential: `<NAME>_API_KEY` in `.env.example` and in the secrets push list
-- a test fixture in `pipeline/tests/` modelled on `conftest.py` — a mock whose
-  handlers **implement the API's filtering and pagination**, not canned bodies.
-  That is what makes the harness worth copying: it exercises the paginator
-  against the envelope the real API actually returns.
+- a test modelled on `pipeline/tests/test_build_source.py` — a `requests_mock`
+  whose handlers **implement the API's pagination**, not canned bodies. That test
+  serves two pages precisely so the paginator is exercised rather than the first
+  response happening to be the whole dataset; a single-page mock passes while a
+  broken paginator silently truncates every real load.
 
 ### When the spec is not enough
 
@@ -104,22 +114,34 @@ quietly loses rows is worse than a connector with a Python file.
 In order. Each step is cheap and rules out a different failure.
 
 ```bash
+# 0. The spec parses, and this is the name everything else is keyed on
+docker compose --profile cli run --rm airflow-cli ingest sources
+
 # 1. Fetch shape and transform, against duckdb — never touches production state
 docker compose --profile cli run --rm airflow-cli \
-  ingest run --destination duckdb --sample 3
+  ingest run --source <name> --destination duckdb --sample 3
 
 # 2. A bounded real load
-docker compose --profile cli run --rm airflow-cli ingest run --destination clickhouse
+docker compose --profile cli run --rm airflow-cli ingest run --source <name>
 
-# 3. The quality gate
-docker compose --profile cli run --rm airflow-cli dq run --checkpoint raw_<name>
+# 3. The quality gate — generated from this spec's own `quality` block
+docker compose --profile cli run --rm airflow-cli dq run --source <name>
 ```
 
 `--sample 3` prints records **post-transform, pre-load** — exactly as they will
-land. Read them. A promoted field that is `None` for every record means the path
-in `promote` is wrong, and no test will catch that.
+land. Read them. A promoted field that is `None` for every record means the path in
+`promote` is wrong, and no test will catch that.
 
-Then check the warehouse: `make ch`, then `SELECT count() FROM raw_<name>.<table>`.
+Then check the warehouse:
+`make ch-q Q="SELECT count() FROM raw_<name>.<table>"`.
+
+Finish with `make up`. Two things only take effect once the stack is re-initialised:
+
+- **the Airflow pool** `<name>_pipeline`, which `airflow-init` creates from the
+  specs. Until it exists the generated DAG's fetch task queues forever — which reads
+  as a slow run rather than a broken one.
+- **the token**, if the containers were already running when it was added to `.env`:
+  container environments are frozen at create time.
 
 ## Rules
 

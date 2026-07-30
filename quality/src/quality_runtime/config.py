@@ -4,21 +4,19 @@ One source of truth: whatever loaded the data is what we validate against, on
 the host (localhost, published ports) and in a container (warehouse-db, internal
 ports) alike.
 
-ClickHouse has no schemas — a "schema" is a database — so the three names below
-are databases. Everything qualifies its table names, so which one the connection
-happens to select is immaterial.
+ClickHouse has no schemas — a "schema" is a database. Each source lands in its
+own `raw_<source>`, which comes from that source's spec rather than from here;
+the only fixed name is ops. Everything qualifies its table names, so which
+database the connection happens to select is immaterial.
 """
 
 import os
 from pathlib import Path
 
-RAW_SCHEMA = "raw_pylon"
-ANALYTICS_SCHEMA = "analytics"
 OPS_SCHEMA = "ops"
 
 # Repo root as seen from this package: quality/src/quality_runtime -> repo root.
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
-MANIFEST_PATH = PROJECT_ROOT / "metabase" / "transforms" / "manifest.yml"
 
 _PREFIX = "DESTINATION__CLICKHOUSE__CREDENTIALS__"
 _DEFAULTS = {
@@ -29,7 +27,11 @@ _DEFAULTS = {
     "HTTP_PORT": "8124",
     "USERNAME": "warehouse",
     "PASSWORD": "warehouse",
-    "DATABASE": "raw_pylon",
+    # Only ever the database the connection selects, never the one queried: every
+    # table name here is qualified. `default` because it is the one database
+    # ClickHouse always has — naming a source's would make the connection fail on
+    # a stack where that source is not connected.
+    "DATABASE": "default",
     "SECURE": "0",
 }
 
@@ -82,8 +84,17 @@ def clickhouse_client_kwargs():
     }
 
 
-def freshness_hours():
-    raw = os.environ.get("GX_FRESHNESS_HOURS", "24").strip() or "24"
+def freshness_hours(default=24):
+    """The freshness SLO in hours.
+
+    The source's spec declares it, which is where it belongs — how often a source
+    changes is a fact about that source. GX_FRESHNESS_HOURS overrides it for
+    every source at once, which is for the operator who wants one loose run
+    without editing the contract, not for expressing the contract.
+    """
+    raw = os.environ.get("GX_FRESHNESS_HOURS", "").strip()
+    if not raw:
+        return int(default)
     try:
         return int(raw)
     except ValueError as exc:

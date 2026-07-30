@@ -1,11 +1,24 @@
-"""The suite builders must construct valid GX objects without touching a database."""
+"""The suite builder must turn a spec into valid GX objects without a database.
+
+The fixture is the add-source skill's own reference spec rather than a minimal
+stub: the expectations are generated from the contract, so if the worked example
+the skill hands people does not produce a sensible contract, the example is wrong.
+"""
 
 import types
+from pathlib import Path
 
 import pytest
-import yaml
+from ingest_runtime.spec import load
 from quality_runtime import config, results
-from quality_runtime.suites import marts, raw_pylon
+from quality_runtime.suites import raw
+
+REFERENCE = Path(__file__).resolve().parents[2] / ".claude" / "skills" / "add-source" / "reference"
+
+
+@pytest.fixture
+def spec():
+    return load("pylon", directory=REFERENCE)
 
 
 def expectation_types(expectations):
@@ -16,54 +29,74 @@ def descriptions(expectations):
     return [expectation.description or "" for expectation in expectations]
 
 
-def columns_required_present(expectations):
-    """Columns asserted non-null.
+class TestGeneratedFromTheSpec:
+    def test_covers_every_resource_the_spec_declares(self, spec):
+        suites = raw.build(spec)
+        assert {table for _, table in suites} == set(raw.entity_tables(spec))
+        assert all(schema == spec.dataset for schema, _ in suites)
 
-    Read off the description rather than a `column` attribute: on ClickHouse
-    these are UnexpectedRowsExpectations, not GX column expectations. See
-    suites.raw_pylon.not_null for why.
-    """
-    return [
-        text.split(" is never null")[0].split(".")[-1]
-        for text in descriptions(expectations)
-        if text.endswith(" is never null")
-    ]
+    def test_the_database_comes_from_the_source_name(self, spec):
+        assert spec.dataset == "raw_pylon"
+        assert all(schema == "raw_pylon" for schema, _ in raw.build(spec))
 
-
-class TestRawSuites:
-    def test_covers_every_ingested_table(self):
-        suites = raw_pylon.build()
-        assert {table for _, table in suites} == set(raw_pylon.ENTITY_TABLES)
-        assert all(schema == config.RAW_SCHEMA for schema, _ in suites)
-
-    def test_every_table_asserts_its_merge_key(self):
-        for (_, table), suite in raw_pylon.build().items():
+    def test_every_table_asserts_its_merge_key(self, spec):
+        """A duplicate primary key means the merge key broke, which is the one
+        failure that silently corrupts an incremental load."""
+        for (_, table), suite in raw.build(spec).items():
             texts = descriptions(suite)
             assert f"{table}.id is unique" in texts, table
             assert f"{table}.id is never null" in texts, table
 
-    def test_only_soft_deleted_tables_get_the_tombstone_check(self):
-        suites = raw_pylon.build()
-        tombstone = "is tombstoned"
-        for (_, table), suite in suites.items():
-            has_check = any(tombstone in text for text in descriptions(suite))
-            assert has_check == (table in raw_pylon.SOFT_DELETE_TABLES), table
+    def test_identity_checks_are_not_opt_in(self, spec):
+        """The spec's `quality` block says nothing about primary keys, and every
+        table still gets them — a spec author cannot forget these."""
+        assert "primary_key" not in str(spec.quality)
+        for (_, table), suite in raw.build(spec).items():
+            assert any("is unique" in text for text in descriptions(suite)), table
 
-    def test_issues_carries_the_freshness_signal(self, monkeypatch):
-        monkeypatch.setenv("GX_FRESHNESS_HOURS", "6")
-        suite = raw_pylon.build()[(config.RAW_SCHEMA, "issues")]
+    def test_only_soft_deleted_tables_get_the_tombstone_check(self, spec):
+        tombstoned = set(spec.tombstoned_tables)
+        assert tombstoned, "the reference spec should exercise soft delete"
+        for (_, table), suite in raw.build(spec).items():
+            has_check = any("is tombstoned" in text for text in descriptions(suite))
+            assert has_check == (table in tombstoned), table
+
+    def test_the_tombstone_fraction_comes_from_the_spec(self, spec):
+        assert spec.quality["max_deleted_fraction"] == 0.5
+        suite = raw.build(spec)[(spec.dataset, "accounts")]
+        assert any("at most 50% of accounts is tombstoned" in text
+                   for text in descriptions(suite))
+
+    def test_declared_not_null_columns_are_checked(self, spec):
+        suites = raw.build(spec)
+        for table, columns in spec.quality["not_null"].items():
+            texts = descriptions(suites[(spec.dataset, table)])
+            for column in columns:
+                assert f"{table}.{column} is never null" in texts
+
+    def test_freshness_reads_its_table_column_and_hours_from_the_spec(self, spec):
+        declared = spec.quality["freshness"]
+        suite = raw.build(spec)[(spec.dataset, declared["table"])]
         freshness = [text for text in descriptions(suite) if "within the last" in text]
         assert len(freshness) == 1
+        assert freshness[0].startswith(
+            f"{declared['table']}.{declared['column']} is within the last {declared['hours']}h")
+
+    def test_an_operator_can_override_the_freshness_slo(self, spec, monkeypatch):
+        """One loose run without editing the contract."""
+        monkeypatch.setenv("GX_FRESHNESS_HOURS", "6")
+        suite = raw.build(spec)[(spec.dataset, "issues")]
+        freshness = [text for text in descriptions(suite) if "within the last" in text]
         assert freshness[0].startswith("issues.updated_at is within the last 6h")
 
-    def test_freshness_is_advisory_and_everything_else_is_not(self):
-        """A quiet tenant must not redden the DAG, but nothing else may opt out.
+    def test_freshness_is_advisory_and_everything_else_is_not(self, spec):
+        """A quiet source must not redden the DAG, but nothing else may opt out.
 
-        Freshness measures tenant activity, not pipeline health, so it warns.
+        Freshness measures upstream activity, not pipeline health, so it warns.
         Making it advisory is only safe if advisory stays the exception.
         """
         advisory, gating = [], []
-        for suite in raw_pylon.build().values():
+        for suite in raw.build(spec).values():
             for expectation in suite:
                 meta = expectation.meta or {}
                 target = advisory if meta.get("severity") == "warn" else gating
@@ -73,114 +106,135 @@ class TestRawSuites:
         assert all("within the last" in text for text in advisory), advisory
         assert not any("within the last" in text for text in gating)
 
-    def test_children_are_checked_against_their_parents(self):
-        suites = raw_pylon.build()
-        messages = descriptions(suites[(config.RAW_SCHEMA, "issue_messages")])
-        assert any("belongs to a loaded issue" in text for text in messages)
-        issues = descriptions(suites[(config.RAW_SCHEMA, "issues")])
-        assert any("resolves to a loaded account" in text for text in issues)
+    def test_a_spec_can_gate_on_freshness_instead(self, spec, tmp_path):
+        """A source genuinely expected to change hourly should be able to fail."""
+        text = (REFERENCE / "pylon.yml").read_text().replace(
+            "severity: warn", "severity: error")
+        (tmp_path / "pylon.yml").write_text(text)
+        strict = load("pylon", directory=tmp_path)
+        suite = raw.build(strict)[(strict.dataset, "issues")]
+        freshness = [e for e in suite if "within the last" in (e.description or "")]
+        assert freshness[0].meta["severity"] == "error"
+
+    def test_children_are_checked_against_their_parents(self, spec):
+        suites = raw.build(spec)
+        for edge in spec.quality["references"]:
+            child_table, child_column = edge["child"].split(".")
+            parent_table = edge["parent"].split(".")[0]
+            texts = descriptions(suites[(spec.dataset, child_table)])
+            assert any(f"{child_table}.{child_column} resolves to a loaded {parent_table}" in text
+                       for text in texts), edge
+
+    def test_an_orphan_check_joins_on_the_declared_parent_column(self, spec):
+        """The parent column comes from the spec, not assumed to be `id`."""
+        suite = raw.build(spec)[(spec.dataset, "issue_messages")]
+        query = next(e.unexpected_rows_query for e in suite
+                     if "resolves to a loaded issues" in (e.description or ""))
+        assert "LEFT ANTI JOIN raw_pylon.issues AS parent" in query
+        assert "ON parent.id = child.issue_id" in query
 
 
-class TestRawSuitesAgainstWhatLanded:
+class TestNarrowedToWhatLanded:
     """A resource that never yielded a row has no table: dlt creates it on first
-    write. Validating the tables that exist beats failing all six."""
+    write. Validating the tables that exist beats failing all of them."""
 
-    ALL_BUT_TEAMS = set(raw_pylon.ENTITY_TABLES) - {"teams"}
+    def test_a_table_that_never_landed_is_left_out(self, spec):
+        present = set(raw.entity_tables(spec)) - {"teams"}
+        suites = raw.build(spec, present=present)
+        assert (spec.dataset, "teams") not in suites
+        assert {table for _, table in suites} == present
 
-    def test_a_table_that_never_landed_is_left_out(self):
-        suites = raw_pylon.build(present=self.ALL_BUT_TEAMS)
-        assert (config.RAW_SCHEMA, "teams") not in suites
-        assert {table for _, table in suites} == self.ALL_BUT_TEAMS
-
-    def test_the_tables_that_landed_keep_their_full_suite(self):
-        everything = raw_pylon.build()
-        landed = raw_pylon.build(present=self.ALL_BUT_TEAMS)
+    def test_the_tables_that_landed_keep_their_full_suite(self, spec):
+        present = set(raw.entity_tables(spec)) - {"teams"}
+        everything = raw.build(spec)
+        landed = raw.build(spec, present=present)
         for key, suite in landed.items():
             assert expectation_types(suite) == expectation_types(everything[key])
 
-    def test_an_orphan_check_goes_when_its_parent_does(self):
-        # The check reads raw_pylon.accounts by name, so keeping it would trade
-        # one missing-table error for another at query time.
-        suites = raw_pylon.build(present={"issues", "issue_messages"})
-        issues = descriptions(suites[(config.RAW_SCHEMA, "issues")])
-        assert not any("resolves to a loaded account" in text for text in issues)
-        messages = descriptions(suites[(config.RAW_SCHEMA, "issue_messages")])
-        assert any("belongs to a loaded issue" in text for text in messages)
+    def test_an_orphan_check_goes_when_its_parent_does(self, spec):
+        # The check names the parent table in SQL, so keeping it would trade one
+        # missing-table error for another at query time.
+        suites = raw.build(spec, present={"issues", "issue_messages"})
+        issues = descriptions(suites[(spec.dataset, "issues")])
+        assert not any("loaded accounts" in text for text in issues)
+        messages = descriptions(suites[(spec.dataset, "issue_messages")])
+        assert any("loaded issues" in text for text in messages)
 
-    def test_messages_lose_their_parent_check_without_issues(self):
-        suites = raw_pylon.build(present={"issue_messages"})
-        messages = descriptions(suites[(config.RAW_SCHEMA, "issue_messages")])
-        assert not any("belongs to a loaded issue" in text for text in messages)
+    def test_a_child_check_goes_when_the_child_does(self, spec):
+        suites = raw.build(spec, present={"issues", "accounts"})
+        assert (spec.dataset, "issue_messages") not in suites
 
-    def test_an_empty_warehouse_builds_nothing_rather_than_erroring(self):
-        assert raw_pylon.build(present=set()) == {}
+    def test_an_empty_warehouse_builds_nothing_rather_than_erroring(self, spec):
+        assert raw.build(spec, present=set()) == {}
 
-    def test_issues_is_the_one_table_whose_absence_is_a_failure(self):
-        # Everything else in raw_pylon is meaningless without it, so it must not
-        # be skippable the way an empty directory resource is.
-        assert raw_pylon.REQUIRED_TABLES == ("issues",)
-
-
-MANIFEST = {
-    "schema": "analytics",
-    "transforms": [
-        {"name": "fact_issue", "sql": "30_fact_issue.sql", "grain": ["issue_id"],
-         "not_null": ["issue_id", "account_id"]},
-        {"name": "metrics_support_daily", "sql": "40_metrics.sql",
-         "grain": ["day", "team_id"],
-         "reconciliation": [
-             {"description": "splits sum to the total",
-              "query": "SELECT 1 FROM {batch} WHERE opened <> new_issues + reopened_issues"},
-         ]},
-        {"name": "dim_date", "sql": "20_dim_date.sql"},
-    ],
-}
+    def test_the_required_tables_come_from_the_spec(self, spec):
+        # Absence is normally a fact about the source rather than a fault; the
+        # spec names the tables without which the rest means nothing.
+        assert raw.required_tables(spec) == ("issues",)
 
 
-class TestMartSuites:
-    def test_single_column_grain_is_checked_as_sql_too(self):
-        """Both arities take the GROUP BY ... HAVING form.
+class TestACompositeKey:
+    """Not every API keys on a single column."""
 
-        The native uniqueness expectation reports the offending values and would
-        be preferable, but it does not compile on ClickHouse.
-        """
-        suite = marts.build(MANIFEST)[("analytics", "fact_issue")]
-        assert "expect_column_values_to_be_unique" not in expectation_types(suite)
-        assert any("grain (issue_id) is unique" in text for text in descriptions(suite))
+    @staticmethod
+    def composite(tmp_path):
+        (tmp_path / "two.yml").write_text(
+            "name: two\n"
+            "api:\n"
+            "  base_url: https://example.test\n"
+            "  auth: {type: bearer, token_env: TWO_TOKEN}\n"
+            "resources:\n"
+            "  - name: rows\n"
+            "    primary_key: [tenant_id, row_id]\n"
+        )
+        return load("two", directory=tmp_path)
 
-    def test_compound_grain_is_checked_as_a_whole(self):
-        suite = marts.build(MANIFEST)[("analytics", "metrics_support_daily")]
-        # A per-column uniqueness check would be wrong here: day alone repeats.
-        assert any("grain (day, team_id) is unique" in text for text in descriptions(suite))
-        assert not any(text.startswith("day is unique") for text in descriptions(suite))
+    def test_each_key_column_is_checked_for_nulls(self, tmp_path):
+        spec = self.composite(tmp_path)
+        texts = descriptions(raw.build(spec)[(spec.dataset, "rows")])
+        assert "rows.tenant_id is never null" in texts
+        assert "rows.row_id is never null" in texts
 
-    def test_grain_columns_are_also_required_to_be_present(self):
-        suite = marts.build(MANIFEST)[("analytics", "metrics_support_daily")]
-        not_null = columns_required_present(suite)
-        assert set(not_null) == {"day", "team_id"}
+    def test_uniqueness_is_asserted_on_the_tuple_not_the_columns(self, tmp_path):
+        """Either column alone repeats legitimately; only the pair is unique."""
+        spec = self.composite(tmp_path)
+        suite = raw.build(spec)[(spec.dataset, "rows")]
+        texts = descriptions(suite)
+        assert "rows (tenant_id, row_id) is unique" in texts
+        assert "rows.tenant_id is unique" not in texts
+        query = next(e.unexpected_rows_query for e in suite
+                     if e.description == "rows (tenant_id, row_id) is unique")
+        assert "GROUP BY tenant_id, row_id" in query
 
-    def test_not_null_does_not_duplicate_grain_columns(self):
-        suite = marts.build(MANIFEST)[("analytics", "fact_issue")]
-        not_null = columns_required_present(suite)
-        assert sorted(not_null) == ["account_id", "issue_id"]
 
-    def test_reconciliation_identities_become_expectations(self):
-        suite = marts.build(MANIFEST)[("analytics", "metrics_support_daily")]
-        assert any("splits sum to the total" in text for text in descriptions(suite))
+class TestAMinimalSpec:
+    """A spec with no `quality` block at all still gets the identity checks."""
 
-    def test_a_transform_without_a_grain_still_gets_a_suite(self):
-        suite = marts.build(MANIFEST)[("analytics", "dim_date")]
-        assert "expect_table_row_count_to_be_between" in expectation_types(suite)
+    @pytest.fixture
+    def bare(self, tmp_path):
+        (tmp_path / "bare.yml").write_text(
+            "name: bare\n"
+            "api:\n"
+            "  base_url: https://example.test\n"
+            "  auth: {type: bearer, token_env: BARE_TOKEN}\n"
+            "resources:\n"
+            "  - name: things\n"
+            "    primary_key: id\n"
+        )
+        return load("bare", directory=tmp_path)
 
-    def test_missing_manifest_is_not_an_error(self, tmp_path):
-        manifest = marts.load_manifest(tmp_path / "absent.yml")
-        assert manifest["transforms"] == []
-        assert marts.build(manifest) == {}
+    def test_it_builds(self, bare):
+        assert set(raw.build(bare)) == {("raw_bare", "things")}
 
-    def test_manifest_round_trips_from_disk(self, tmp_path):
-        path = tmp_path / "manifest.yml"
-        path.write_text(yaml.safe_dump(MANIFEST))
-        assert marts.build(marts.load_manifest(path)).keys() == marts.build(MANIFEST).keys()
+    def test_it_gets_identity_checks_and_nothing_it_did_not_declare(self, bare):
+        texts = descriptions(raw.build(bare)[("raw_bare", "things")])
+        assert "things.id is unique" in texts
+        assert "things.id is never null" in texts
+        assert not any("within the last" in text for text in texts)
+        assert not any("tombstoned" in text for text in texts)
+
+    def test_nothing_is_required_unless_declared(self, bare):
+        assert raw.required_tables(bare) == ()
 
 
 class TestExceptionSummary:
@@ -234,6 +288,16 @@ class TestConfig:
     def test_blank_env_var_falls_back_to_the_default(self, monkeypatch):
         monkeypatch.setenv("DESTINATION__CLICKHOUSE__CREDENTIALS__HOST", "")
         assert "@localhost:" in config.connection_string()
+
+    def test_the_connection_does_not_select_a_source_database(self, monkeypatch):
+        """Every table name is qualified, so the connection must not depend on a
+        particular source being connected to this stack."""
+        monkeypatch.delenv("DESTINATION__CLICKHOUSE__CREDENTIALS__DATABASE", raising=False)
+        assert config.connection_string().endswith("/default")
+
+    def test_freshness_hours_defaults_to_what_the_caller_passes(self, monkeypatch):
+        monkeypatch.delenv("GX_FRESHNESS_HOURS", raising=False)
+        assert config.freshness_hours(default=48) == 48
 
     def test_freshness_hours_rejects_nonsense(self, monkeypatch):
         monkeypatch.setenv("GX_FRESHNESS_HOURS", "soon")

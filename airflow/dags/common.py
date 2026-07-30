@@ -1,9 +1,9 @@
-"""Shared pieces of the Pylon DAGs.
+"""Shared pieces of the generated source DAGs.
 
-The DAGs shell out to `pylon`, `dq` and `mbx` rather than importing them. Those
-tools live in their own virtualenv at /opt/data-venv with dlt and Great
-Expectations behind them; importing that tree into Airflow's own environment
-would mean reconciling two large, tightly-pinned dependency graphs forever.
+The DAGs shell out to `ingest` and `dq` rather than importing them. Those tools
+live in their own virtualenv at /opt/data-venv with dlt and Great Expectations
+behind them; importing that tree into Airflow's own environment would mean
+reconciling two large, tightly-pinned dependency graphs forever.
 """
 
 from __future__ import annotations
@@ -12,25 +12,17 @@ import pendulum
 from airflow.providers.standard.operators.empty import EmptyOperator
 from airflow.sdk import TriggerRule
 
-# Serializes every dlt run. Two concurrent ingests share one pipeline working
-# directory and one incremental cursor, and would interleave into nonsense.
-INGEST_POOL = "pylon_pipeline"
-
-# `mbx transforms` exits with this when the manifest declares nothing to build.
-# Duplicated rather than imported: these DAGs deliberately do not import the
-# pipeline packages, so the constant is restated here and kept in step with
-# mb_tools.run_transforms.NOTHING_TO_BUILD_EXIT by the DAG integrity test.
-NOTHING_TO_BUILD_EXIT = 99
-
-# Written by the ingest task, read by the ops task. Per-run so a backfill and an
-# hourly run can never read each other's summary.
+# Written by the ingest task, read by the ops task. Keyed by dag_id as well as
+# run_id: one source's backfill and its hourly run are different DAGs, and two
+# sources ingesting at once are different again — none of them may read each
+# other's summary.
 #
 # On the dlt-state volume, not /tmp: /tmp is the container's own writable layer, so
 # a recreate between ingest and record_ops loses the summary and the
 # ops.pipeline_runs row with it, while the DAG still reports success.
 SUMMARY_PATH = (
     "/opt/dlt-state/run-summaries/"
-    "pylon-summary-{{ run_id | replace('/', '_') | replace(':', '-') }}.json"
+    "run-summary-{{ dag.dag_id }}-{{ run_id | replace('/', '_') | replace(':', '-') }}.json"
 )
 
 DEFAULT_ARGS = {
@@ -40,21 +32,25 @@ DEFAULT_ARGS = {
 }
 
 
-# Duplicated from ingest_runtime.ingest.settings rather than imported: DAGs
-# shell out and never import the pipeline packages, which live in a separate
-# virtualenv. test_dag_integrity asserts the two stay equal — the test may
-# import what the DAG may not.
-PRODUCTION_DESTINATION = "clickhouse"
+def ingest_command(source, extra_args=""):
+    """`ingest run`, always writing the summary the ops task records.
 
+    Every fetch goes through here so that `--summary-json` cannot be forgotten on
+    one of the three DAGs: a run with no summary file leaves no row in
+    ops.pipeline_runs, and "the pipeline has not run" and "the pipeline ran and
+    recorded nothing" then look identical.
 
-def ingest_command(extra_args=""):
-    """`pylon ingest`, always writing a summary for the ops task to record.
+    `--destination` is deliberately not passed. The CLI already defaults to the
+    production warehouse, and a destination named here as well would be a second
+    copy to go stale — which it did once already, during the ClickHouse
+    migration, when the hourly DAG spent a day failing with
+    `'postgres' is not one of 'clickhouse', 'duckdb'`.
 
     `set -o pipefail` matters: without it the exit status would come from tee.
     """
     return (
         "set -euo pipefail\n"
-        f"ingest run --destination {PRODUCTION_DESTINATION} --summary-json '{SUMMARY_PATH}' {extra_args}\n"
+        f"ingest run --source {source} --summary-json '{SUMMARY_PATH}' {extra_args}\n"
     )
 
 
@@ -67,8 +63,10 @@ def run_verdict():
     green no matter what broke upstream. Ingest died with a missing API key three
     hours running and the DAG reported success each time.
 
-    NONE_FAILED rather than ALL_SUCCESS: a skipped stop gate — an empty transform
-    manifest — is an expected state, not a failure, and has to stay green.
+    NONE_FAILED rather than ALL_SUCCESS: the two agree on everything that matters
+    here — upstream_failed still counts as failed, so a dead ingest reddens the
+    run either way — and NONE_FAILED leaves room for a task that skips for a
+    reason the pipeline expects.
 
     Wire it downstream of the real work *and* of record_ops, never downstream of
     record_ops alone: trigger rules look only at direct upstream tasks, so a
@@ -95,5 +93,4 @@ def record_ops_command():
         "else\n"
         "  echo 'no ingest summary — the ingest task did not complete'\n"
         "fi\n"
-        "dq ops-sync || echo 'transform run sync failed (Metabase may be down); continuing'\n"
     )

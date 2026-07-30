@@ -2,14 +2,17 @@
 
 import logging
 import os
-from datetime import timedelta
 from pathlib import Path
 
 import dlt
 import pendulum
 from dlt.destinations.exceptions import DatabaseUndefinedRelation
 
-from .ingest.settings import MESSAGE_WATERMARK_FUDGE_SECONDS, PRODUCTION_DESTINATION
+PRODUCTION_DESTINATION = "clickhouse"
+
+# Clock slack when comparing a parent's change time against the newest child
+# already loaded. Extensions implementing a parent_watermark strategy use it.
+MESSAGE_WATERMARK_FUDGE_SECONDS = 3
 
 log = logging.getLogger(__name__)
 
@@ -36,14 +39,14 @@ def schema_dir(source=None):
     return base / source if source else base
 
 
-def build_pipeline(source=None, destination=PRODUCTION_DESTINATION, dataset_name=None):
+def build_pipeline(source, destination=PRODUCTION_DESTINATION, dataset_name=None):
     """Tables land in `raw_<source>` — a ClickHouse database, a duckdb schema.
 
     ClickHouse has no schemas, so dlt puts every table in the credentials
-    database and prefixes it with the dataset name: dataset "raw_pylon" yields
-    `raw_pylon.raw_pylon___issues`. An EMPTY dataset name makes dlt skip the
+    database and prefixes it with the dataset name: dataset "raw_x" yields
+    `raw_x.raw_x___things`. An EMPTY dataset name makes dlt skip the
     prefix entirely — `make_qualified_table_name_path` falls through to the bare
-    table name — so the tables are plain `raw_pylon.issues`, which is what
+    table name — so the tables are plain `raw_x.things`, which is what
     Metabase shows and what every transform and expectation is written against.
 
     Blanking `dataset_table_separator` as well is tempting and wrong. It changes
@@ -57,7 +60,6 @@ def build_pipeline(source=None, destination=PRODUCTION_DESTINATION, dataset_name
     Schema YAML is exported (and imported, when reviewed overrides exist) from
     schemas/<source>/, making schema evolution show up as a git diff.
     """
-    source = source or "pylon"
     if dataset_name is None:
         dataset_name = f"raw_{source}"
 
@@ -120,46 +122,6 @@ def _as_utc(value):
     return pendulum.instance(value, tz="UTC")
 
 
-def pending_message_issue_ids(pipeline):
-    """Issue ids whose messages are stale: latest_message_time on the issue is
-    newer than the newest loaded message (+ a clock fudge). Computed in Python
-    from two trivial queries rather than a LEFT JOIN, which keeps it identical
-    on every destination — some engines return column defaults instead of NULLs
-    for non-matching LEFT JOIN rows, which would silently mark every unmatched
-    issue as up to date.
-
-    `title != 'SCRUBBED'` skips tickets the tenant has redacted; they keep a
-    latest_message_time that no message fetch can ever satisfy.
-    """
-    with pipeline.sql_client() as client:
-        issues_table = client.make_qualified_table_name("issues")
-        try:
-            issue_rows = client.execute_sql(
-                f"SELECT id, latest_message_time FROM {issues_table} "
-                f"WHERE _deleted = false AND title != 'SCRUBBED' "
-                f"AND latest_message_time IS NOT NULL "
-                f"ORDER BY latest_message_time ASC"
-            )
-        except DatabaseUndefinedRelation:
-            log.info("[issue_messages] issues table does not exist yet — empty worklist")
-            return []
-
-        messages_table = client.make_qualified_table_name("issue_messages")
-        try:
-            watermark_rows = client.execute_sql(
-                f"SELECT issue_id, max(timestamp) FROM {messages_table} GROUP BY issue_id"
-            )
-        except DatabaseUndefinedRelation:
-            watermark_rows = []
-
-    watermarks = {issue_id: max_ts for issue_id, max_ts in watermark_rows}
-    fudge = timedelta(seconds=MESSAGE_WATERMARK_FUDGE_SECONDS)
-    pending = []
-    for issue_id, latest_message_time in issue_rows:
-        mark = watermarks.get(issue_id)
-        if mark is None or _as_utc(latest_message_time) > _as_utc(mark) + fudge:
-            pending.append(issue_id)
-    return pending
 
 
 def table_counts(pipeline, tables):

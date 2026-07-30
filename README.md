@@ -1,19 +1,22 @@
 # Data Sovereignty
 
-A self-hosted data stack you drive from Claude Code — ingestion, orchestration,
-data quality, warehouse and BI in one repo, on your own hardware. Point it at a
-REST API and it lands the data, validates it, and serves it through Metabase.
-Nothing leaves your machine except the calls to the APIs you connect and the
-Metabase license check.
+A self-hosted ingestion stack you drive from Claude Code — ingestion,
+orchestration, data quality, warehouse and BI in one repo, on your own hardware.
+Point it at a REST API and it lands the data, validates it, and serves it through
+Metabase. Nothing leaves your machine except the calls to the APIs you connect and
+the Metabase license check.
+
+**It arrives empty.** No source is connected, so nothing is scheduled and nothing
+is fetched until you connect one — a fresh checkout has exactly one DAG, and its
+job is to prove the plumbing works.
 
 ```
-any REST API ──(dlt)──▶ ClickHouse ──(Metabase transforms)──▶ semantic layer
+any REST API ──(dlt)──▶ ClickHouse ──▶ Metabase
                         ├─ raw_<source>.*  one database per source
-                        ├─ analytics.*     base_ → dim_ → fact_ → metrics_
                         └─ ops.*           quality results, run history
 
-Airflow schedules it. Great Expectations verifies it. Metabase models and
-serves it. Claude Code operates all of it through .claude/skills.
+Airflow schedules it. Great Expectations verifies it. Metabase serves it.
+Claude Code operates all of it through .claude/skills.
 ```
 
 Every component is open source and self-hosted: [dlt](https://dlthub.com),
@@ -22,12 +25,11 @@ Every component is open source and self-hosted: [dlt](https://dlthub.com),
 [Metabase](https://github.com/metabase/metabase),
 [ClickHouse](https://github.com/ClickHouse/ClickHouse), Docker.
 
-**One caveat about "fully open source."** Metabase is open source, but
-*transforms*, the *Library* and *git-sync* are Enterprise features behind a
-license token. Everything up to and including the warehouse — ingestion,
-scheduling, quality, the `ops` observability schema — needs no token. Without
-one, Metabase still boots and charts your data; it just won't build the modeled
-layer. `make mb-audit` tells you which side of that line you're on.
+**One caveat about "fully open source."** Everything this repo does — ingestion,
+scheduling, quality, the `ops` observability schema, hosting the instance — needs
+no license token, and Metabase boots and charts your data without one. A token
+only unlocks Enterprise features, none of which this stack uses. `make bootstrap`
+reports which side of that line the instance is on.
 
 ## Quick start
 
@@ -35,29 +37,35 @@ layer. `make mb-audit` tells you which side of that line you're on.
 make env      # create .env, generate Airflow secrets
 ```
 
-Fill in three values in `.env`: `PYLON_API_KEY` (or whichever source you're
-connecting), `MB_PREMIUM_EMBEDDING_TOKEN` (your Metabase licence), and
-`MB_ADMIN_PASSWORD` (pick one — it becomes the Metabase admin login).
+Fill in two values in `.env`: `MB_PREMIUM_EMBEDDING_TOKEN` (your Metabase licence)
+and `MB_ADMIN_PASSWORD` (pick one — it becomes the Metabase admin login).
 
 ```bash
 make build    # build the Airflow image (~5 min the first time)
 make up       # start services, bootstrap Metabase, provision an API key
-make mb-audit # confirm the licence grants transforms, remote_sync and library
-make ingest   # first ingest
+make smoke    # prove the plumbing: CLIs, warehouse, Metabase, dlt state
 ```
 
-Then ask Claude: *"what's the state of my pipeline?"*
+There is nothing to ingest yet. Ask Claude to *"connect the Zendesk API"* — or
+whichever source you want — and then *"what's the state of my pipeline?"*
 
 ## Connecting a source
 
 A source is a file. `sources/<name>.yml` declares the API, how it pages, what is
-incremental, when it runs, and what "correct" means for its tables — and the
-runtime does the rest. Most connectors need no Python.
+incremental, when it runs, and what "correct" means for its tables. Everything
+else follows from it: the DAGs are generated per spec, the expectations are
+generated per spec, and the database, dlt pipeline and Airflow pool are named
+after it. Most connectors need no Python at all.
 
-Ask Claude to *"connect the Zendesk API"* and the `add-source` skill will
-research the API's own documentation for endpoints, pagination and rate limits,
-ask you the things research can't answer, generate the connector, and prove it
-loads. `sources/pylon.yml` is the reference; its comments explain each field.
+Ask Claude to *"connect the Zendesk API"* and the `add-source` skill will research
+the API's own documentation for endpoints, pagination and rate limits, ask you the
+things research can't answer, generate the connector, and prove it loads. Then add
+the token to `.env` under the name the spec's `token_env` gives, and re-run
+`make up` so the source's Airflow pool is created.
+
+`.claude/skills/add-source/reference/pylon.yml` is a complete worked example, and
+its comments explain every field. It lives in the skill rather than in `sources/`
+on purpose: a reference an agent reads, not a connector the stack runs.
 
 Three things are worth knowing before you connect one:
 
@@ -92,17 +100,21 @@ them in `.env`.
 
 | Command | What it does |
 |---|---|
-| `make ingest` | Trigger the ingest DAG now |
-| `make backfill START=2026-01-01` | Backfill a date range |
-| `make quality` | Run the raw + mart data-quality checkpoints |
+| `make sources` | List the connected sources |
+| `make ingest SOURCE=x` | Trigger a source's ingest DAG now |
+| `make backfill SOURCE=x START=2026-01-01` | Backfill a date range |
+| `make quality SOURCE=x` | Validate a source's raw contract |
+| `make smoke` | Prove the stack's plumbing, touching no data |
 | `make status` | Service health and URLs |
 | `make ch` | A clickhouse-client shell on the warehouse |
-| `make mb-transforms` | Rebuild the transform layer from the manifest |
 | `make test` | Offline test suite (mocked APIs, no network) |
 | `make nuke` | Destroy everything, including data |
 
+Every pipeline command takes `SOURCE=`, because there is no default source to
+mean — the repo ships with none.
+
 DAG-integrity tests need Airflow, deliberately outside the default environment:
-`uv run --group dag-tests pytest airflow/tests`.
+`make test-dags`.
 
 ## Lifecycle notes
 
@@ -119,7 +131,11 @@ DAG-integrity tests need Airflow, deliberately outside the default environment:
   later still gets one.
 - **Don't ingest by hand against the production warehouse while the stack is up.**
   Airflow serialises through the pool; an out-of-band run races the cursor. Use
-  `make ingest`. `--destination duckdb` is always safe — separate pipeline name.
+  `make ingest SOURCE=x`. `--destination duckdb` is always safe — separate pipeline
+  name.
+- **Airflow pools are created by `airflow-init` from the specs.** Connect a source
+  while the stack is running and re-run `make up`, or its ingest task has no pool
+  to acquire and simply queues.
 
 ## Running it on AWS
 
@@ -135,12 +151,12 @@ tunnel (`make tunnels`).
 
 | Path | Contents |
 |---|---|
-| `sources/` | One YAML per connector — the source contract |
-| `pipeline/` | The ingestion runtime and CLI |
-| `quality/` | Great Expectations suites and the `dq` CLI |
-| `metabase/` | Transform manifest + SQL, and the `mbx` CLI |
-| `airflow/dags/` | Ingest, backfill and reconcile DAGs |
-| `terraform/` | The AWS host |
+| `sources/` | One YAML per connector — the source contract. Empty until you connect one. |
+| `pipeline/` | The ingestion runtime and `ingest` CLI |
+| `quality/` | The `dq` CLI and the suite builder that reads each spec |
+| `airflow/dags/` | `stack_smoke`, and the generator that turns specs into DAGs |
+| `warehouse/`, `docker/` | The ClickHouse and Airflow images |
+| `terraform/`, `scripts/` | The AWS host and its deploy machinery |
 | `.claude/skills/` | How Claude operates this stack |
 
 [CLAUDE.md](CLAUDE.md) has the architecture map, the ClickHouse specifics, and
@@ -148,20 +164,24 @@ the rules that keep the stack reproducible — read it before changing anything.
 
 ## What's built, and what isn't
 
-**Verified end to end for Pylon**: the stack boots, ingestion lands real data,
-the quality checkpoint is green against it, and the Metabase bootstrap provisions
-its own API key.
+**The spec-driven path is complete.** One `sources/<name>.yml` produces the fetch,
+the DAGs, the expectations, the warehouse database and the cursor. A source using
+only paged full-refresh endpoints needs no Python; the test suite drives such a
+spec end to end into duckdb, so "no Python" is verified rather than claimed.
 
-**The multi-source path is partly built.** The source contract, the spec-driven
-runtime, per-source databases and cursors, and the `add-source` skill are in
-place — and the runtime is proven byte-identical to the hand-written Pylon code
-it replaces. Still to come: quality suites generated from a spec's `quality`
-block, and per-source DAG generation. Until those land, a second source produces
-a valid spec whose DAG and checkpoint have to be written by hand.
+**Verified end to end against a real API**: the stack boots, ingestion lands real
+data, the quality checkpoint is green against it, and the Metabase bootstrap
+provisions its own API key.
 
-**Modeling is not this repo's job.** It runs the platform — ingestion,
-orchestration, hosting, and the Metabase instance. Authoring transforms, metrics
-and dashboards happens in a separate project driven by `mb-cli`, which ships its
-own skills for it (`mb skills get data-workflow`). The `manifest.yml` contract
-and `mbx transforms` stay here as the orchestration seam — the hourly DAG builds
-whatever the manifest declares — but what goes in it is decided elsewhere.
+**Incremental strategies beyond full refresh need an extension module.**
+`search_window` and `parent_watermark` are algorithms, not settings, so a spec
+declaring one also declares `extensions:` and supplies a Python module for it. The
+reference example uses both — it documents the shape of a hard connector, and
+copying it means writing that module too.
+
+**Modeling is not this repo's job, and neither is scheduling it.** What lives here
+is ingestion, the orchestration of ingestion, quality on the raw layer, the
+warehouse, and the Metabase instance itself. Transforms, metrics, dashboards and
+the runs that build them belong to a separate project. The seam between the two is
+the warehouse: this repo lands trustworthy raw tables and hands over a provisioned
+instance pointed at them.

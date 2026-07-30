@@ -15,7 +15,7 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
-  # The three packages are installed editable and their sources are bind
+  # The two packages are installed editable and their sources are bind
   # mounted on the instance, so SQL, suites, DAGs and Python land without a
   # rebuild. Only a change to the dependency set or the image itself needs one
   # — and only that kind of change needs the expensive `stack` job below.
@@ -49,7 +49,7 @@ jobs:
 
           # Needs a new image.
           rebuild=false
-          if grep -qE '^(docker/|uv\.lock$|pyproject\.toml$|(pipeline|quality|metabase)/pyproject\.toml$)' <<<"$changed"; then
+          if grep -qE '^(docker/|uv\.lock$|pyproject\.toml$|(pipeline|quality)/pyproject\.toml$)' <<<"$changed"; then
             rebuild=true
           fi
 
@@ -63,7 +63,7 @@ jobs:
 
           printf 'rebuild=%s\nintegration=%s\n' "$rebuild" "$integration" >>"$GITHUB_OUTPUT"
 
-  # Fast, hermetic: mocked Pylon API, duckdb destination, no network, no secrets.
+  # Fast, hermetic: mocked HTTP, duckdb destination, no network, no secrets.
   unit:
     name: Lint and unit tests
     runs-on: ubuntu-latest
@@ -129,19 +129,18 @@ jobs:
       - name: Build the Airflow image
         run: docker compose build airflow-cli
 
-      # No license token in CI, so Enterprise behaves like OSS: the warehouse,
-      # the CLIs and the ops schema are exercised; transforms and the Library
-      # are not reachable and are not asserted here.
+      # No license token in CI, so Enterprise behaves like OSS. Nothing this job
+      # asserts needs one: the warehouse, the CLIs and the ops schema all work
+      # against an unlicensed instance.
       - name: Boot the warehouse
         run: docker compose up -d --wait warehouse-db metabase-app-db airflow-db
 
       - name: The CLIs are all on PATH
         run: |
           docker compose --profile cli run --rm airflow-cli \
-            bash -c 'ingest --help >/dev/null && dq --help >/dev/null \
-                     && mbx --help >/dev/null && mb --version >/dev/null'
+            bash -c 'ingest --help >/dev/null && dq --help >/dev/null'
 
-      - name: The ops schema builds against a real Postgres
+      - name: The ops schema builds against a real warehouse
         run: docker compose --profile cli run --rm airflow-cli dq ops-init
 
       - name: Airflow registers every DAG
@@ -152,7 +151,7 @@ jobs:
 
       - name: Smoke DAG
         # Metabase is not booted here (its first-boot migrations take minutes),
-        # so the task that checks MB_API_KEY is expected to fail. Everything
+        # so the task that probes its health is expected to fail. Everything
         # else in the DAG must pass.
         run: |
           docker compose --profile cli run --rm airflow-cli \

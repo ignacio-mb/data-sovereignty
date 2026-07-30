@@ -84,10 +84,8 @@ chown "$OWNER" "$STAGE_B"
 trap 'rm -f "$STAGE_B"' EXIT
 
 # Everything from here runs as the user that owns the tree, never as root.
-# Two things break permanently otherwise: mbx audit rewrites
-# docs/10_instance_capabilities.md in place, and bootstrap_metabase.sh
-# replaces .env with a fresh file — a root-owned replacement of either locks
-# the stack out of its own state.
+# bootstrap_metabase.sh replaces .env with a fresh file, and a root-owned
+# replacement locks the stack out of its own state permanently.
 #
 # Run rather than exec, so the temporary file is cleaned up afterwards and the
 # lock on fd 9 is held by this shell for the whole deploy. Stage B's JSON

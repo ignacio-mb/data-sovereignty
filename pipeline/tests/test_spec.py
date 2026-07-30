@@ -62,12 +62,20 @@ class TestRejects:
             spec.load("t", directory=write(tmp_path, "name: t\n  bad indent: ["))
 
 
-class TestPylonSpec:
-    """The shipped spec must describe the connector the tests already assert."""
+REFERENCE_DIR = pathlib.Path(__file__).resolve().parents[2] / ".claude/skills/add-source/reference"
+
+
+class TestReferenceExample:
+    """The worked example the add-source skill points at must stay valid.
+
+    sources/ is empty by default, so this spec is not loaded by the stack — which
+    is exactly why it needs a test. An example that has quietly drifted out of
+    sync with the loader teaches every future connector something wrong.
+    """
 
     @pytest.fixture
     def pylon(self):
-        return spec.load("pylon")
+        return spec.load("pylon", directory=REFERENCE_DIR)
 
     def test_the_dataset_is_derived_not_configurable(self, pylon):
         # Two sources sharing one raw database would share one soft-delete pass.
@@ -119,10 +127,20 @@ class TestPylonSpec:
         assert "directory" in families
 
 
-def test_available_lists_the_shipped_sources():
-    assert "pylon" in spec.available()
+def test_the_repo_ships_with_no_sources_connected():
+    """A fresh checkout ingests nothing. Someone connects a source deliberately;
+    the stack does not arrive pretending to have one."""
+    assert spec.available() == [], f"unexpected specs in {spec.sources_dir()}"
 
 
-def test_the_repo_root_resolves_to_a_real_sources_dir():
-    assert (spec.sources_dir() / "pylon.yml").is_file(), spec.sources_dir()
+def test_the_sources_directory_exists_and_is_where_it_should_be():
+    assert spec.sources_dir().is_dir(), spec.sources_dir()
     assert isinstance(spec.REPO_ROOT, pathlib.Path)
+
+
+def test_every_reference_example_loads():
+    """Whatever the skill ships as an example must parse under today's loader."""
+    examples = sorted(REFERENCE_DIR.glob("*.yml"))
+    assert examples, "the add-source skill should ship at least one worked example"
+    for path in examples:
+        spec.load(path.stem, directory=REFERENCE_DIR)

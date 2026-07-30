@@ -16,23 +16,31 @@ Then check which required secrets are still blank — **without printing their
 values**:
 
 ```bash
-grep -E '^(PYLON_API_KEY|MB_PREMIUM_EMBEDDING_TOKEN|MB_ADMIN_PASSWORD)=' .env \
+grep -E '^(MB_PREMIUM_EMBEDDING_TOKEN|MB_ADMIN_PASSWORD)=' .env \
   | sed -E 's/=(.+)/= [set]/'
 ```
 
-Anything showing `=` with nothing after it needs the user. Ask for all missing
-ones in a single question; do not ask them to paste values into the chat if you
-can avoid it — tell them to edit `.env` directly, then continue.
+Anything showing `=` with nothing after it needs the user. Ask for all missing ones
+in a single question; do not ask them to paste values into the chat if you can avoid
+it — tell them to edit `.env` directly, then continue.
+
+Those two are all the stack itself needs. **Source credentials are not part of
+setup**, because no source ships connected: each spec names the variable holding its
+token in `api.auth.token_env`, and `add-source` says which name to add when a source
+is connected.
 
 ```bash
 make build   # ~5-10 min the first time
 make up      # starts services, bootstraps Metabase, provisions an API key
-make mb-audit
 ```
 
-`make mb-audit` is the gate. If it fails on missing token features, the license
-is not a valid production Enterprise token and modeling cannot proceed — say so
-plainly rather than working around it.
+`make bootstrap` (which `make up` runs, and which is safe to re-run on its own)
+is the gate: it is what proves the instance is provisioned — set up, holding a
+working API key, and connected to the warehouse. It also reports whether the licence
+token was accepted. An unaccepted token is not a blocker here: the instance behaves
+like OSS and everything this stack does — ingestion, quality, the warehouse, the
+`ops` history — works either way. Say plainly that it is effectively OSS rather than
+implying something is broken.
 
 ## Daily
 
@@ -45,10 +53,11 @@ make down          # stop, keep all data
 ## Things that will confuse you
 
 **`make up` is staged and the order matters.** Metabase must be bootstrapped and
-`MB_API_KEY` written to `.env` before the Airflow containers start, or they
-inherit an empty key and every transform task fails on auth. A bare
-`docker compose up -d` skips that. The fix is always `make up` again — it
-recreates the containers with the now-populated environment.
+`MB_API_KEY` written to `.env` before the Airflow containers start: container
+environments are frozen at create time, so anything started first carries the
+pre-bootstrap `.env` until it is recreated. A bare `docker compose up -d` skips
+the ordering. The fix is always `make up` again — it recreates the containers
+with the now-populated environment.
 
 **Init SQL runs once.** `warehouse/init/*.sql` only executes on first
 initialization of an empty volume. Editing it does nothing to a running stack.

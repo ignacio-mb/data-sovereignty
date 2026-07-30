@@ -27,7 +27,6 @@ command -v aws >/dev/null 2>&1 || { echo "error: aws CLI is required" >&2; exit 
 # variable undecryptable, so it is generated once, here, and carried forward —
 # never regenerated on the instance.
 REQUIRED=(
-  PYLON_API_KEY
   MB_PREMIUM_EMBEDDING_TOKEN
   MB_ADMIN_EMAIL
   MB_ADMIN_PASSWORD
@@ -43,10 +42,21 @@ REQUIRED=(
   AIRFLOW_PASSWORD
   AIRFLOW_DB
 )
-OPTIONAL=(
-  MB_GIT_SYNC_URL
-  MB_GIT_SYNC_BRANCH
-  MB_GIT_SYNC_PAT
+
+# Plus one token per connected source, named by that source's own spec rather
+# than listed here. No source ships with the repo, so a clean checkout pushes
+# none — and naming one would make an unconnected source's key mandatory
+# configuration for a stack that ingests nothing.
+#
+# Required once a source IS connected: its DAG is scheduled from the moment the
+# spec lands, and a scheduled fetch with no token fails hourly.
+while IFS= read -r token_var; do
+  [[ -n "$token_var" ]] || continue
+  REQUIRED+=("$token_var")
+done < <(
+  grep -hoE '^[[:space:]]*token_env:[[:space:]]*[A-Za-z_][A-Za-z0-9_]*' \
+    "${REPO_ROOT}"/sources/*.yml 2>/dev/null \
+    | awk '{ print $2 }' | sort -u
 )
 
 # Read a value from .env without sourcing the file or ever echoing it.
@@ -70,15 +80,6 @@ for key in "${REQUIRED[@]}"; do
   v="$(value_of "$key")"
   if [[ -z "$v" ]]; then
     missing+=("$key")
-    continue
-  fi
-  put "$key" "$v"
-done
-
-for key in "${OPTIONAL[@]}"; do
-  v="$(value_of "$key")"
-  if [[ -z "$v" ]]; then
-    echo "secrets_push: $key is empty, skipping"
     continue
   fi
   put "$key" "$v"

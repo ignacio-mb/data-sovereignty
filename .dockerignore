@@ -18,7 +18,6 @@ docs/
 # Runtime state, rebuildable
 airflow/logs/
 quality/gx_output/
-metabase/.state/
 .scratch/
 
 # Local development

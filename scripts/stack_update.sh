@@ -79,13 +79,6 @@ done
 avail_mb="$(df -Pm /data | awk 'NR==2 {print $4}')"
 [[ "$avail_mb" -gt 5120 ]] || fail "/data has only ${avail_mb}MB free; refusing to build"
 
-# A locally packed mb-cli beats the pinned published one in the Dockerfile and
-# is git-ignored, so it would silently survive every future rebuild and quietly
-# change which CLI the stack runs.
-if compgen -G 'docker/airflow/vendor/*.tgz' >/dev/null; then
-  fail "a vendored mb-cli tarball is present: $(ls -1 docker/airflow/vendor/*.tgz | tr '\n' ' ')" 77
-fi
-
 # ─── Is anything running? ────────────────────────────────────────────────────
 
 running_count() { docker compose ps --status running -q 2>/dev/null | grep -c . || true; }
@@ -110,11 +103,25 @@ af() {
     airflow-scheduler airflow "$@"
 }
 
-PIPELINE_DAGS=(pylon_ingest_hourly pylon_backfill pylon_reconcile_weekly)
+# The pipeline DAGs are generated from the specs in sources/, so which ids exist
+# depends on what is connected — and a checkout with no sources has none beyond
+# stack_smoke. Nothing below may name one: a hardcoded list went stale the moment
+# the DAGs became generated, and every deploy then failed on "DAG
+# pylon_ingest_hourly is not registered". The id SUFFIX the generator produces is
+# matched instead — <source>_ingest, <source>_backfill, <source>_reconcile — so
+# keep those in step with source_dags.py.
+
+# Every registered DAG except the smoke test, read live rather than predicted: a
+# reconcile DAG exists only when its spec declares a history floor, so a predicted
+# list would name DAGs that legitimately do not exist.
+registered_pipeline_dags() {
+  af dags list -o json 2>/dev/null \
+    | jq -r '.[] | select(.dag_id != "stack_smoke") | .dag_id' 2>/dev/null || true
+}
 
 # ─── Nothing may be in flight ────────────────────────────────────────────────
-# Queued counts as in flight: the ingest pool has one slot, so while the
-# weekly reconcile holds it the hourly run sits queued and its timeout has not
+# Queued counts as in flight: a source's ingest pool has one slot, so while its
+# reconcile holds it the scheduled run sits queued and its timeout has not
 # started ticking.
 #
 # Deferring is not losing the deploy. The target commit is already recorded in
@@ -124,19 +131,21 @@ if [[ "$STACK_UP" == true && "$ALLOW_IN_FLIGHT" != "true" ]]; then
   long_running="$(airflow_db_query "
     select count(*) from dag_run
     where state in ('running','queued')
-      and dag_id in ('pylon_backfill','pylon_reconcile_weekly')" | tr -d '[:space:]')"
+      and (dag_id like '%\_backfill' escape '\'
+        or dag_id like '%\_reconcile' escape '\')" | tr -d '[:space:]')"
   if [[ "${long_running:-0}" -gt 0 ]]; then
-    fail "a backfill or the weekly reconcile is in flight; deferring" 76
+    fail "a backfill or a reconcile is in flight; deferring" 76
   fi
 
   waited=0
   while :; do
     hourly="$(airflow_db_query "
       select count(*) from dag_run
-      where state in ('running','queued') and dag_id = 'pylon_ingest_hourly'" | tr -d '[:space:]')"
-    # Every `make quality`, `make mb-transforms` and `make docs` is a one-off
-    # container that no dag_run knows about. Resetting the tree underneath one
-    # mid-run is the failure this catches.
+      where state in ('running','queued')
+        and dag_id like '%\_ingest' escape '\'" | tr -d '[:space:]')"
+    # Every `make quality` and `make docs` is a one-off container that no
+    # dag_run knows about. Resetting the tree underneath one mid-run is the
+    # failure this catches.
     oneoff="$(docker ps -q \
       --filter "label=com.docker.compose.project=data-sovereignty" \
       --filter "label=com.docker.compose.service=airflow-cli" | grep -c . || true)"
@@ -171,7 +180,8 @@ unpause() {
 }
 if [[ "$STACK_UP" == true ]]; then
   listing="$(af dags list -o json 2>/dev/null || true)"
-  for dag in "${PIPELINE_DAGS[@]}"; do
+  while IFS= read -r dag; do
+    [[ -n "$dag" ]] || continue
     if jq -e --arg d "$dag" \
          'any(.[]; .dag_id == $d and (.is_paused | tostring | ascii_downcase == "true"))' \
          >/dev/null 2>&1 <<<"$listing"; then
@@ -179,7 +189,7 @@ if [[ "$STACK_UP" == true ]]; then
     fi
     af dags pause "$dag" >/dev/null || warn "could not pause ${dag}"
     PAUSED_BY_US+=("$dag")
-  done
+  done < <(registered_pipeline_dags)
   trap unpause EXIT
 fi
 
@@ -192,10 +202,10 @@ if ! git diff --quiet; then
 fi
 
 # ─── Rebuild or not ──────────────────────────────────────────────────────────
-# The three packages are installed editable and their sources are bind
+# The two packages are installed editable and their sources are bind
 # mounted, so SQL, suites, DAGs and Python land without a rebuild. Only the
 # dependency set and the image itself need one.
-REBUILD_PATHS=(docker/ uv.lock pyproject.toml pipeline/pyproject.toml quality/pyproject.toml metabase/pyproject.toml)
+REBUILD_PATHS=(docker/ uv.lock pyproject.toml pipeline/pyproject.toml quality/pyproject.toml)
 
 # The base is the last commit that finished, not HEAD: a previous deploy that
 # reset the tree and then failed its build leaves HEAD already at the new
@@ -233,7 +243,7 @@ fi
 
 # ─── Build before touching the tree ──────────────────────────────────────────
 # uv's editable install points into the bind-mounted source directories, so the
-# instant the tree resets, every pylon/dq/mbx call runs the new source against
+# instant the tree resets, every `ingest`/`dq` call runs the new source against
 # the old environment — for the fifteen minutes an arm64 build can take. So
 # the new image is built from a detached worktree first, and the live tree is
 # only moved once it exists.
@@ -274,9 +284,9 @@ git -c core.hooksPath=/dev/null reset --hard "$SHA"
 # be present. `docker compose config -q` is no help: it warns about an unset
 # variable and exits 0.
 
-# MB_API_KEY is empty until bootstrap mints it; the licence token and the
-# git-sync settings are all legitimately unset.
-MAY_BE_EMPTY=(MB_API_KEY MB_PREMIUM_EMBEDDING_TOKEN MB_GIT_SYNC_URL MB_GIT_SYNC_BRANCH MB_GIT_SYNC_PAT)
+# The licence token is legitimately unset: Metabase boots without one and
+# everything this stack does works against an unlicensed instance.
+MAY_BE_EMPTY=(MB_PREMIUM_EMBEDDING_TOKEN)
 mapfile -t COMPOSE_REQUIRED < <(
   # $${VAR} is an escape: compose passes it through as a literal for the
   # container's own shell to expand, so it is not a variable this file has to
@@ -342,8 +352,8 @@ else
     BOOTSTRAPPED=true
   fi
 
-  # Container environments are frozen at create time, so a re-minted API key
-  # that does not reach the containers means every mbx call gets a 401.
+  # Container environments are frozen at create time, so a warehouse credential
+  # or a source token rewritten in .env only reaches the stack on a recreate.
   compose_args=(up -d --wait --wait-timeout 600)
   if [[ "$(sha256sum .env | cut -d' ' -f1)" != "$env_before" ]]; then
     compose_args+=(--force-recreate)
@@ -379,15 +389,35 @@ else
   fail "DAG import errors after deploy: $(tr '\n' ' ' <<<"$import_errors" | cut -c1-300)"
 fi
 
+# What must be registered is derived from the tree as it is NOW — after the reset,
+# so a deploy that connects a source is checked against the source it just added,
+# and one that removes a source no longer demands the DAGs it just deleted.
+#
+# stack_smoke unconditionally; then _ingest and _backfill for each connected
+# source. Not _reconcile: that one is generated only when the spec declares a
+# backfill_start for the tombstone guard to compare against, so requiring it would
+# fail a legitimate spec.
+expected_dags=(stack_smoke)
+for spec in sources/*.yml; do
+  [[ -e "$spec" ]] || continue
+  source_name="$(basename "$spec" .yml)"
+  expected_dags+=("${source_name}_ingest" "${source_name}_backfill")
+done
+
 registered="$(af dags list -o json 2>/dev/null || true)"
-for dag in "${PIPELINE_DAGS[@]}" stack_smoke; do
+for dag in "${expected_dags[@]}"; do
   jq -e --arg d "$dag" 'any(.[]; .dag_id == $d)' >/dev/null 2>&1 <<<"$registered" \
     || fail "DAG ${dag} is not registered"
 done
+if [[ "${#expected_dags[@]}" -eq 1 ]]; then
+  # Worth saying out loud: a stack that ingests nothing is the shipped state, not
+  # a broken deploy, and the deploy log is where someone looks to tell them apart.
+  set +x; echo "no sources connected — only stack_smoke is expected"; set -x
+fi
 
 if [[ "$REBUILT" == true ]]; then
   docker compose --profile cli run --rm airflow-cli bash -c \
-    'ingest --help >/dev/null && dq --help >/dev/null && mbx --help >/dev/null && mb --version >/dev/null' \
+    'ingest --help >/dev/null && dq --help >/dev/null' \
     || fail "the CLIs do not resolve against the rebuilt image"
   SMOKE=clis
 fi

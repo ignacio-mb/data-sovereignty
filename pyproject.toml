@@ -1,27 +1,25 @@
 [project]
 name = "data-sovereignty"
 version = "0.1.0"
-description = "Self-hosted Pylon -> Postgres -> Metabase data stack"
+description = "Self-hosted multi-source ingestion into ClickHouse, served by Metabase"
 # Upper bound comes from great-expectations. 3.12 matches the Airflow image.
 requires-python = ">=3.11,<3.14"
-# The root is a virtual project: it exists to pull the three workspace members
-# into one environment, so `pylon`, `dq` and `mbx` are all on PATH together.
+# The root is a virtual project: it exists to pull the two workspace members
+# into one environment, so `ingest` and `dq` are on PATH together.
 dependencies = [
     "ingest-runtime",
     "quality-runtime",
-    "mb-tools",
 ]
 
 [tool.uv]
 package = false
 
 [tool.uv.workspace]
-members = ["pipeline", "quality", "metabase"]
+members = ["pipeline", "quality"]
 
 [tool.uv.sources]
 ingest-runtime = { workspace = true }
 quality-runtime = { workspace = true }
-mb-tools = { workspace = true }
 
 [dependency-groups]
 dev = [
@@ -37,11 +35,10 @@ dag-tests = [
 ]
 
 [tool.pytest.ini_options]
-testpaths = ["pipeline/tests", "quality/tests", "metabase/tests", "airflow/tests"]
-markers = [
-    "postgres: needs a live warehouse; deselected by default, run via `make test-postgres`",
-]
-addopts = "-m 'not postgres'"
+testpaths = ["pipeline/tests", "quality/tests", "airflow/tests"]
+# No markers and nothing deselected: every test runs offline, against mocked HTTP
+# and duckdb, so there is no subset to hold back. airflow/tests skips itself when
+# Airflow is absent — its own importorskip, not a marker.
 
 [tool.ruff]
 line-length = 110
