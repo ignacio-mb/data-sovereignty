@@ -140,6 +140,15 @@ a variable is *set*. A spec names the variable holding its token (`token_env`) a
 never the token; the containers read `.env` wholesale, so connecting a credential
 is one line there and no compose change.
 
+That rule is an instruction, and an instruction is not an enforcement. The
+`permissions.deny` list in `.claude/settings.json` is the enforcement: the harness
+refuses the read before the tool runs, so `.env`, `.deploy.env`, `.dlt/secrets.toml`
+and the Terraform state and tfvars cannot enter a transcript. `.env.example` is
+deliberately *not* denied — it is the file to read and to edit. The `Bash(cat .env*)`
+entries are speed bumps, not a boundary: deny rules match the command string, and a
+shell has a hundred other ways to print a file. What actually holds on that side is
+not granting broad `Bash` allows.
+
 **Ingest through Airflow while the stack is up.** A per-source pool of one
 serializes that source's dlt runs; an out-of-band `ingest run --source x` races its
 incremental cursor. `--destination duckdb` is always safe — separate pipeline name.
