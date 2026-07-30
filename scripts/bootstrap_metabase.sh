@@ -120,6 +120,10 @@ if [[ "$HAS_USER_SETUP" != "true" && -n "$SETUP_TOKEN" ]]; then
     | curl -fsS -X POST "${MB_URL}/api/setup" \
         -H 'Content-Type: application/json' --data @- >/dev/null
   note "created admin ${MB_ADMIN_EMAIL}"
+  # This instance has existed for one second, so any MB_API_KEY carried in .env
+  # belongs to a Metabase that no longer exists. Step 3 must mint rather than
+  # reuse, whatever the key looks like.
+  WIZARD_RAN=1
 else
   note "already set up"
 fi
@@ -135,11 +139,17 @@ echo "==> Provisioning an API key"
 # Set on the two paths that mean this instance has something Metabase has never
 # scanned; step 5 reads it to decide whether to pay for a schema sync.
 NEEDS_SCHEMA_SYNC=0
+# curl, not `mb auth status`: that reports whether a credential is configured,
+# not whether this server accepts it, so it succeeds against an instance which
+# has never seen the key — and the next call fails with 401 having already
+# announced that the key was fine. /api/user/current is the cheapest endpoint
+# that genuinely requires authorization.
 key_works() {
-  [[ -n "${1:-}" ]] && MB_API_KEY="$1" mb auth status --json --max-bytes 0 >/dev/null 2>&1
+  [[ -n "${1:-}" ]] || return 1
+  curl -fsS -o /dev/null -H "x-api-key: ${1}" "${MB_URL}/api/user/current" 2>/dev/null
 }
 
-if key_works "${MB_API_KEY:-}"; then
+if [[ "${WIZARD_RAN:-0}" == 0 ]] && key_works "${MB_API_KEY:-}"; then
   note "existing MB_API_KEY still authenticates, keeping it"
 else
   SESSION="$(curl -fsS -X POST "${MB_URL}/api/session" \
