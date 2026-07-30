@@ -82,6 +82,60 @@ Three things are worth knowing before you connect one:
   uses it for pages that claim more data and deliver none, and for a worklist
   computed from the warehouse rather than a cursor.
 
+### Worked example: Linear, from a prompt
+
+**1. Ask for it, on your laptop.**
+
+```bash
+claude
+```
+
+> connect the Linear API — I want issues, projects and teams in the warehouse
+
+The skill reads Linear's own documentation for endpoints, pagination and rate
+limits, asks you the few things research cannot settle, writes
+`sources/linear.yml`, and proves it loads against duckdb. Nothing touches the
+warehouse yet.
+
+Do this on a laptop rather than on the instance. The instance's checkout is a
+deploy artefact and a deploy resets it, so a spec written there is lost work.
+
+**2. Merge it.** Open a PR and merge; the deploy lands the spec on the instance
+and `raw_linear`, the DAGs and the pool follow from it.
+
+**3. Give it its token.** The spec names the variable it wants — `token_env:
+LINEAR_API_KEY`. Put the value in your local `.env`, then:
+
+```bash
+make secrets-push
+```
+
+You do not have to tell that script about Linear. It reads every `token_env:`
+out of `sources/*.yml`, so a source that declares its variable is a source whose
+secret gets carried.
+
+**4. Create its pool**, because pools are built from the specs at init and this
+one did not exist when the stack came up:
+
+```bash
+make remote CMD="make secrets-pull && make up"
+```
+
+**5. Run it.**
+
+```bash
+make remote CMD="make ingest SOURCE=linear"
+```
+
+Then `make remote CMD="make quality SOURCE=linear"`, and the rows are in
+`raw_linear.*` in ClickHouse, visible in Metabase through `make tunnels`.
+
+What that gave you, none of it written by hand: a `raw_linear` database, three
+DAGs (`linear_ingest`, `linear_backfill`, `linear_reconcile`), an Airflow pool of
+one that stops concurrent runs racing the cursor, and a generated expectation
+suite that fails the run if the primary key is null, duplicated, or the table
+arrives empty.
+
 ## Services
 
 | Service | URL | Notes |
