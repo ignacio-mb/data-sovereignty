@@ -9,13 +9,13 @@ no transforms, no marts, no metrics, no semantic layer. What the rows *mean* is
 decided in whatever project owns the warehouse's meaning, and keeping the seam
 there is deliberate — scheduling someone else's model is owning it.
 
-**One source ships connected: Swoogo** (`sources/swoogo.yml`), because this
-checkout is also where it is operated from. Everything in `sources/` is live —
-each spec generates an unpaused hourly ingest DAG plus backfill and reconcile
-DAGs on any stack that comes up, and needs the variable in its `token_env` set
-or that DAG fails every hour. So a fork gets Swoogo whether it wants it or not:
-**delete `sources/swoogo.yml` if you are not us**, and the stack goes back to
-scheduling nothing.
+**Two sources ship connected: Swoogo** (`sources/swoogo.yml`) **and Customer.io**
+(`sources/customerio.yml`), because this checkout is also where they are operated
+from. Everything in `sources/` is live — each spec generates an unpaused ingest
+DAG on the schedule it declares, plus backfill and reconcile DAGs, on any stack
+that comes up, and needs the variable in its `token_env` set or that DAG fails on
+every tick. So a fork gets both whether it wants them or not: **delete the specs
+in `sources/` if you are not us**, and the stack goes back to scheduling nothing.
 
 `airflow/tests/test_dag_integrity.py::TestWhatThisCheckoutShips` pins the list,
 so adding or removing a spec fails a test until this paragraph agrees with it.
@@ -118,10 +118,10 @@ does change hourly can set `severity: error` and gate on it.
 ## Hard rules
 
 **Never add a spec to `sources/` to demonstrate something.** Anything there is
-connected: it schedules an unpaused hourly DAG and demands a credential on every
+connected: it schedules an unpaused DAG and demands a credential on every
 clone, so a spec added to illustrate a point becomes someone else's failing DAG.
 Examples go in a skill's `reference/` directory, where Pylon lives. The bar for
-`sources/` is "we actually run this" — today that is Swoogo alone, and
+`sources/` is "we actually run this" — today that is Swoogo and Customer.io, and
 `TestWhatThisCheckoutShips` fails until the list and the docs agree.
 
 **Nothing here models the data.** No transforms, no marts, no metrics, no

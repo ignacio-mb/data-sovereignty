@@ -6,11 +6,12 @@ Point it at a REST API and it lands the data, validates it, and serves it throug
 Metabase. Nothing leaves your machine except the calls to the APIs you connect and
 the Metabase license check.
 
-**One source ships connected: Swoogo**, because this repo is also where we run
-it. Everything in `sources/` is live — each spec generates an unpaused hourly
-ingest DAG the moment the stack comes up, and fails every hour without its
-credential. **If you are not us, delete `sources/swoogo.yml`** and the stack goes
-back to scheduling nothing but the smoke DAG, which exists to prove the plumbing.
+**Two sources ship connected: Swoogo and Customer.io**, because this repo is also
+where we run them. Everything in `sources/` is live — each spec generates an
+unpaused ingest DAG the moment the stack comes up, on the schedule it declares,
+and fails on every tick without its credential. **If you are not us, delete the
+specs in `sources/`** and the stack goes back to scheduling nothing but the smoke
+DAG, which exists to prove the plumbing.
 
 Then ask Claude to connect a source you actually have.
 
@@ -73,8 +74,10 @@ make up       # start services, bootstrap Metabase, provision an API key
 make smoke    # prove the plumbing: CLIs, warehouse, Metabase, dlt state
 ```
 
-There is nothing to ingest yet. Ask Claude to *"connect the Zendesk API"* — or
-whichever source you want — and then *"what's the state of my pipeline?"*
+`make up` schedules whatever is in `sources/` — on a fresh clone that is Swoogo
+and Customer.io, ours, which will fail on every tick without their credentials.
+Delete them unless you are us. Then ask Claude to *"connect the Zendesk API"* —
+or whichever source you have — and then *"what's the state of my pipeline?"*
 
 ## Connecting a source
 
@@ -109,17 +112,48 @@ Three things are worth knowing before you connect one:
   uses it for pages that claim more data and deliver none, and for a worklist
   computed from the warehouse rather than a cursor.
 
-## Services
+## Services and ports
 
-| Service | URL | Notes |
-|---|---|---|
-| Metabase | http://localhost:3100 | Enterprise v1.63.x |
-| Airflow | http://localhost:8080 | simple auth, all users admin |
-| Data docs | http://localhost:8081 | Great Expectations validation docs |
-| Warehouse | `http://localhost:8124` (HTTP), `9001` (native) | ClickHouse — `make ch` |
+Both stacks answer on `localhost`, so the port is the only thing telling them
+apart. They are deliberately disjoint: **31xx/80xx is this laptop, 32xx/81xx is
+the instance.**
 
-Ports avoid the `metabase-demo` stack's defaults so both can run at once. Change
-them in `.env`.
+| Service | Local (`make up`) | Production (`make tunnels`) | Notes |
+|---|---|---|---|
+| Metabase | http://localhost:3100 | http://localhost:3200 | Enterprise v1.63.x |
+| Airflow | http://localhost:8080 | http://localhost:8180 | simple auth, all users admin |
+| Data docs | http://localhost:8081 | http://localhost:8181 | Great Expectations validation docs |
+| Warehouse (HTTP) | http://localhost:8124 | http://localhost:8224 | ClickHouse — `make ch` locally |
+| Warehouse (native) | `localhost:9001` | — | `clickhouse-client` |
+
+The production column exists only while `make tunnels` is running; it forwards
+the instance's services over SSM, so it needs valid AWS credentials rather than
+an open port. Local ports are set in `.env` — change them there, but see the
+warning below.
+
+**Why the two ranges must not overlap.** They used to be identical, and it was
+not a cosmetic problem. An SSH tunnel binds `127.0.0.1` while Docker binds
+`0.0.0.0`, and loopback wins — so with both running, `http://localhost:3100`
+silently *was* production while every local container kept serving underneath,
+with nothing in any output distinguishing them. `make bootstrap` rotated the
+instance's Metabase API key that way, twice, reporting ordinary local success.
+
+Two guards enforce the separation, because moving the ports only fixes tunnels
+this repo opened:
+
+- **`make up` and `make bootstrap` refuse** when any non-Docker process shares
+  one of the stack's ports (`scripts/assert_local_stack.sh`). Override with
+  `DS_SKIP_LOCAL_CHECK=1`.
+- **`ingest run` and every `dq` command refuse** a production-destination run
+  whose warehouse host is loopback. Inside the containers compose injects
+  `warehouse-db`, so `make ingest` and `make quality` are unaffected, and
+  `--destination duckdb` is always allowed. Override with `DS_ALLOW_HOST_INGEST`
+  / `DS_ALLOW_HOST_DQ`.
+
+Both overrides mean *"I have checked by hand which instance this reaches"*.
+
+If you change `METABASE_HOST_PORT` in `.env`, change `MB_URL` to match —
+they are independent values, and the bootstrap follows `MB_URL`.
 
 ## Everyday commands
 
@@ -137,8 +171,19 @@ them in `.env`.
 | `make test` | Offline test suite (mocked APIs, no network) |
 | `make nuke` | Destroy everything, including data |
 
-Every pipeline command takes `SOURCE=`, because there is no default source to
-mean — the repo ships with none.
+Every pipeline command takes `SOURCE=`, because the DAGs are generated per spec
+and there is no default one to mean. `make sources` lists them.
+
+Two caveats worth knowing before you rely on either:
+
+- **`make backfill` does not bound a delegated resource.** A strategy the
+  declarative layer cannot express — `parent_fanout`, `search_window`,
+  `parent_watermark` — is fetched by an `extensions:` module, and `--start`/`--end`
+  never reach it: it bounds itself by its own cursor. The run says so, and it
+  refuses to tombstone such a resource, but the range is not applied.
+- **`ingest run` and `dq` refuse to run against a loopback warehouse from the
+  host.** Use the `make` targets, which run inside the stack, or
+  `--destination duckdb` to rehearse.
 
 DAG-integrity tests need Airflow, deliberately outside the default environment:
 `make test-dags`.
@@ -174,11 +219,26 @@ tunnel (`make tunnels`).
 
 `terraform/` builds the host; [docs/deploy.md](docs/deploy.md) is the runbook.
 
+Three things that are only obvious once a deploy has failed:
+
+- **Three repository secrets must exist before a merge can deploy anything** —
+  `AWS_DEPLOY_ROLE_ARN`, `AWS_REGION`, `DEPLOY_INSTANCE_ID`, created by hand once
+  per fork. Nothing in Terraform can set them. The deploy action checks them
+  first and prints the `gh secret set` commands, rather than failing further down
+  on an unset region interpolated into an STS endpoint.
+- **A source's credential must be in Parameter Store before its spec lands**, or
+  its DAG fails on every tick with `<NAME> is not set`. `make secrets-push` finds
+  it automatically from the spec's `token_env`, and the deploy verifies the same
+  list before converging.
+- **`make deploy-status` tells you which of three things is true**: the instance
+  is unreachable (usually expired AWS credentials, since ssh goes over SSM), no
+  deploy has run yet, or here is the commit that is live.
+
 ## Layout
 
 | Path | Contents |
 |---|---|
-| `sources/` | One YAML per connector — the source contract. Empty until you connect one. |
+| `sources/` | One YAML per connector — the source contract. **Everything here is live.** |
 | `pipeline/` | The ingestion runtime and `ingest` CLI |
 | `quality/` | The `dq` CLI and the suite builder that reads each spec |
 | `airflow/dags/` | `stack_smoke`, and the generator that turns specs into DAGs |
