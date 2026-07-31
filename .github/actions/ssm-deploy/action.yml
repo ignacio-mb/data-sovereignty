@@ -41,6 +41,40 @@ inputs:
 runs:
   using: composite
   steps:
+    # `required: true` on a composite input is not enforced when the caller
+    # passes an expression: an unset secret interpolates to an empty string and
+    # the input is technically "provided". Without this the run dies further
+    # down on `Invalid endpoint: https://sts..amazonaws.com` — the empty region
+    # inside the endpoint — which says nothing about the actual cause. Every
+    # merge to main failed that way until somebody read the URL closely.
+    - name: Check the deploy secrets exist
+      shell: bash
+      env:
+        ROLE_ARN: ${{ inputs.role-arn }}
+        AWS_REGION: ${{ inputs.region }}
+        INSTANCE_ID: ${{ inputs.instance-id }}
+      run: |
+        set -euo pipefail
+        missing=()
+        [[ -n "$ROLE_ARN" ]]    || missing+=("AWS_DEPLOY_ROLE_ARN")
+        [[ -n "$AWS_REGION" ]]  || missing+=("AWS_REGION")
+        [[ -n "$INSTANCE_ID" ]] || missing+=("DEPLOY_INSTANCE_ID")
+        if (( ${#missing[@]} )); then
+          {
+            echo "::error::deploy secrets not set: ${missing[*]}"
+            echo "These are repository secrets, created by hand once per fork —"
+            echo "nothing in Terraform can set them for you. See docs/deploy.md:"
+            echo
+            echo "  gh secret set AWS_DEPLOY_ROLE_ARN --body \"\$(terraform -chdir=terraform output -raw cd_role_arn)\""
+            echo "  gh secret set AWS_REGION          --body \"\$(terraform -chdir=terraform output -raw region)\""
+            echo "  gh secret set DEPLOY_INSTANCE_ID  --body \"\$(terraform -chdir=terraform output -raw instance_id)\""
+            echo
+            echo "Until then nothing has been deployed and no command was sent to the"
+            echo "instance — this step runs before anything is recorded or executed."
+          } >&2
+          exit 1
+        fi
+
     - name: Assume the deploy role
       shell: bash
       env:

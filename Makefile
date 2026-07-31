@@ -137,8 +137,23 @@ tunnels: ## Forward every UI from the instance to localhost:32xx (Ctrl-C to stop
 	ssh -N -L 3200:localhost:3100 -L 8180:localhost:8080 \
 	        -L 8181:localhost:8081 -L 8224:localhost:8124 $(DS_REMOTE_HOST)
 
+# Distinguishes the three things that used to look identical, because the old
+# one-liner ended in `tail` of a file that does not exist until the first deploy
+# and so exited 1 — indistinguishable from "the instance is unreachable", which
+# is what it was read as.
 deploy-status: ## What is live on the instance, and the last few deploys
-	@ssh $(DS_REMOTE_HOST) 'cat /data/deploy/state.json 2>/dev/null; echo; tail -5 /data/deploy/history.log 2>/dev/null'
+	@ssh -o BatchMode=yes -o ConnectTimeout=20 $(DS_REMOTE_HOST) true 2>/dev/null || { \
+	  echo "cannot reach '$(DS_REMOTE_HOST)'."; \
+	  echo "  ssh goes over SSM, so this is usually expired AWS credentials — try 'aws login'."; \
+	  echo "  Check with: aws ssm describe-instance-information --query 'InstanceInformationList[].PingStatus'"; \
+	  exit 1; }
+	@ssh $(DS_REMOTE_HOST) 'set -e; \
+	  if [ -s /data/deploy/state.json ]; then cat /data/deploy/state.json; \
+	  else echo "no deploy has run on this instance yet (/data/deploy is empty)."; \
+	       echo "The checkout is at $$(git -C /data/data-sovereignty rev-parse --short HEAD 2>/dev/null || echo unknown), placed there by the host bootstrap rather than by a deploy."; fi; \
+	  echo; \
+	  if [ -s /data/deploy/history.log ]; then tail -5 /data/deploy/history.log; \
+	  else echo "(no deploy history)"; fi'
 
 hold: ## Stop deploys landing: make hold REASON='migrating the warehouse'
 	@test -n "$(REASON)" || (echo "usage: make hold REASON='why'" && exit 2)
