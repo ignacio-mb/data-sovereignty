@@ -11,8 +11,37 @@
 # repository and error text from `mb` can carry connection details.
 set -euo pipefail
 
-REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# This script is NOT necessarily inside the checkout it operates on. ds-deploy
+# extracts it out of git into /run/<project>/stack_update.$$.sh, deliberately —
+# the wrapper that vets a commit must not be rewritable by the commit it is
+# vetting. So `dirname "${BASH_SOURCE[0]}"/..` resolves to /run, `cd` lands
+# there, and the very first check fails with "no .env on this host" while a
+# perfectly good .env sits in the checkout. No deploy could ever succeed, and
+# the message pointed at render_env_from_ssm.sh, which was already correct.
+#
+# ds-deploy cds to the checkout before handing over and runuser preserves the
+# working directory, so the inherited cwd is right. Prefer an explicit
+# DS_REPO_DIR, then that cwd, and only then the script-relative guess — which is
+# the one that works when this file is run straight out of a clone.
+#
+# The compose file is the marker rather than .git: a deploy operates on a
+# checkout, but the thing this script actually needs is the stack definition.
+if [[ -n "${DS_REPO_DIR:-}" && -f "${DS_REPO_DIR}/docker-compose.yml" ]]; then
+  REPO_ROOT="$DS_REPO_DIR"
+elif [[ -f "${PWD}/docker-compose.yml" ]]; then
+  REPO_ROOT="$PWD"
+else
+  REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+fi
 cd "$REPO_ROOT"
+
+# Fail on the real problem rather than on whatever is missing three checks
+# later. Everything below assumes it is standing in the stack's directory.
+[[ -f docker-compose.yml ]] || {
+  echo "stack_update: no docker-compose.yml in ${REPO_ROOT} — cannot find the checkout." >&2
+  echo "  Set DS_REPO_DIR, or run this from the repository root." >&2
+  exit 1
+}
 
 DEPLOY_DIR="${DS_DEPLOY_DIR:-/data/deploy}"
 STATE_FILE="${DEPLOY_DIR}/state.json"
@@ -53,8 +82,20 @@ finish() {
   # `ps --format json` is newline-delimited objects in some compose versions
   # and a single array in others. flatten reads both; without it the newer
   # shape parses to [[…]] and every filter below quietly matches nothing.
+  # `|| echo '[]'` was wrong in a way that only bites when something else is
+  # already broken. Under `set -o pipefail` the pipeline reports failure if
+  # `docker compose ps` fails even though jq succeeded and printed `[]` — so the
+  # fallback appended a SECOND document, `--argjson` rejected `[]\n[]`, and the
+  # summary was never emitted. The caller then saw an empty stdout and a bare
+  # exit code, with the actual message trapped in the on-host log. That is
+  # exactly how a wrong repo root looked like nothing at all.
+  #
+  # head -n1 guarantees one document whatever the pipeline did; the emptiness
+  # check covers the case where nothing was printed.
   services="$(docker compose ps --format json 2>/dev/null \
-    | jq -sc 'flatten | [.[] | {name: .Service, state: .State, health: .Health}]' || echo '[]')"
+    | jq -sc 'flatten | [.[] | {name: .Service, state: .State, health: .Health}]' 2>/dev/null \
+    | head -n1)"
+  [[ -n "$services" ]] || services='[]'
   jq -nc \
     --arg sha "$SHA" --arg old_sha "$OLD_SHA" --arg message "$message" \
     --argjson code "$code" --argjson rebuilt "$REBUILT" --argjson recreated "$RECREATED" \
