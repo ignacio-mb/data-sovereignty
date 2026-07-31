@@ -6,13 +6,6 @@ Point it at a REST API and it lands the data, validates it, and serves it throug
 Metabase. Nothing leaves your machine except the calls to the APIs you connect and
 the Metabase license check.
 
-**Two sources ship connected: Swoogo and Customer.io**, because this repo is also
-where we run them. Everything in `sources/` is live — each spec generates an
-unpaused ingest DAG the moment the stack comes up, on the schedule it declares,
-and fails on every tick without its credential. **If you are not us, delete the
-specs in `sources/`** and the stack goes back to scheduling nothing but the smoke
-DAG, which exists to prove the plumbing.
-
 Then ask Claude to connect a source you actually have.
 
 ```
