@@ -9,10 +9,8 @@ through dlt's REST source, with no extension module involved.
 import duckdb
 import pytest
 import requests_mock as rm_module
-from click import exceptions as click_exceptions
 
-from ingest_runtime import cli as cli_module
-from ingest_runtime import runtime, spec
+from ingest_runtime import locality, runtime, spec
 from ingest_runtime.warehouse import build_pipeline
 
 SPEC = """
@@ -165,22 +163,32 @@ class TestHostSideProductionGuard:
     An SSH tunnel to the instance binds loopback while Docker binds 0.0.0.0, so
     the tunnel wins and a host-side production run writes to the instance with
     nothing in the output to say so. That happened. The guard refuses the whole
-    class rather than trying to tell the two apart at the address level.
+    class rather than trying to tell the two apart at the address level, and it
+    is shared with `dq`, which writes DDL and rows and had no guard at all.
     """
 
-    def test_a_loopback_warehouse_refuses_a_production_run(self, monkeypatch):
-        monkeypatch.setenv("DESTINATION__CLICKHOUSE__CREDENTIALS__HOST", "localhost")
+    ACTION = "a test action"
+    ALTERNATIVES = "  use the container\n"
+
+    @pytest.fixture(autouse=True)
+    def no_override(self, monkeypatch):
         monkeypatch.delenv("DS_ALLOW_HOST_INGEST", raising=False)
-        with pytest.raises(click_exceptions.ClickException, match="refusing a production-destination"):
-            cli_module._refuse_host_side_production_run()
+
+    @pytest.mark.parametrize("host", ["localhost", "127.0.0.1", "::1", "0.0.0.0", ""])
+    def test_every_loopback_spelling_is_refused(self, monkeypatch, host):
+        monkeypatch.setenv("DESTINATION__CLICKHOUSE__CREDENTIALS__HOST", host)
+        with pytest.raises(locality.RemoteWarehouseRefused):
+            locality.refuse_loopback_warehouse(
+                self.ACTION, "DS_ALLOW_HOST_INGEST", self.ALTERNATIVES)
 
     def test_the_container_address_passes(self, monkeypatch):
         """Compose injects `warehouse-db`, so a legitimate run never trips this."""
         monkeypatch.setenv("DESTINATION__CLICKHOUSE__CREDENTIALS__HOST", "warehouse-db")
-        monkeypatch.delenv("DS_ALLOW_HOST_INGEST", raising=False)
-        cli_module._refuse_host_side_production_run()
+        locality.refuse_loopback_warehouse(
+            self.ACTION, "DS_ALLOW_HOST_INGEST", self.ALTERNATIVES)
 
     def test_the_override_is_explicit(self, monkeypatch):
         monkeypatch.setenv("DESTINATION__CLICKHOUSE__CREDENTIALS__HOST", "127.0.0.1")
         monkeypatch.setenv("DS_ALLOW_HOST_INGEST", "1")
-        cli_module._refuse_host_side_production_run()
+        locality.refuse_loopback_warehouse(
+            self.ACTION, "DS_ALLOW_HOST_INGEST", self.ALTERNATIVES)

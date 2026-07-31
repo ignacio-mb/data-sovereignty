@@ -58,47 +58,6 @@ def list_sources():
         click.echo(f"{name:16} {len(spec.resources):2} resources   schedule: {schedule}")
 
 
-_LOOPBACK = {"localhost", "127.0.0.1", "::1", "0.0.0.0"}
-
-
-def _refuse_host_side_production_run():
-    """A production-destination run must come from inside the stack.
-
-    Two hazards, one check. The documented one: an out-of-band `ingest run`
-    races the incremental cursor that the source's Airflow pool of one exists to
-    serialise. The one that was only found by hitting it: on a laptop the
-    warehouse address is `localhost`, and `localhost` names a port rather than a
-    machine — an SSH tunnel to the instance binds loopback while Docker binds
-    0.0.0.0, so the tunnel wins and a "local" run writes to PRODUCTION with
-    nothing in the output to say so.
-
-    Inside the containers compose injects `warehouse-db`, so a legitimate run
-    never sees a loopback address and never reaches this. `--destination duckdb`
-    is exempt: it writes a file and cannot touch either warehouse.
-    """
-    import os
-
-    host = os.environ.get("DESTINATION__CLICKHOUSE__CREDENTIALS__HOST", "").strip()
-    if host.lower() not in _LOOPBACK:
-        return
-    if os.environ.get("DS_ALLOW_HOST_INGEST", "").strip():
-        log.warning("[guard] host-side production run allowed by DS_ALLOW_HOST_INGEST; "
-                    "confirm which warehouse %s resolves to before trusting the result", host)
-        return
-    raise click.ClickException(
-        f"refusing a production-destination run from the host "
-        f"(warehouse host is {host!r}).\n\n"
-        f"  Through Airflow, which serialises on the source's pool:\n"
-        f"      make ingest SOURCE=<name>\n"
-        f"  Or inside the stack, where the address is unambiguous:\n"
-        f"      docker compose --profile cli run --rm airflow-cli ingest run --source <name>\n"
-        f"  To rehearse safely on this machine:\n"
-        f"      ingest run --source <name> --destination duckdb --sample 3\n\n"
-        f"Set DS_ALLOW_HOST_INGEST=1 only once you have confirmed by hand which "
-        f"warehouse {host!r} actually reaches — a tunnel on that port makes it the instance."
-    )
-
-
 @cli.command("run")
 @click.option("--source", "source_name", required=True,
               help="Which source to load. `ingest sources` lists them.")
@@ -130,7 +89,20 @@ def run(source_name, start, end, resources_csv, mode, mark_deleted_flag, sample_
     setup_logging(verbose)
 
     if destination == PRODUCTION_DESTINATION:
-        _refuse_host_side_production_run()
+        from .locality import RemoteWarehouseRefused, refuse_loopback_warehouse
+        try:
+            refuse_loopback_warehouse(
+                "a production-destination ingest run",
+                "DS_ALLOW_HOST_INGEST",
+                "  Through Airflow, which serialises on the source's pool:\n"
+                "      make ingest SOURCE=<name>\n"
+                "  Or inside the stack, where the address is unambiguous:\n"
+                "      docker compose --profile cli run --rm airflow-cli ingest run --source <name>\n"
+                "  To rehearse safely on this machine:\n"
+                "      ingest run --source <name> --destination duckdb --sample 3\n",
+            )
+        except RemoteWarehouseRefused as error:
+            raise click.ClickException(str(error)) from error
 
     try:
         spec = load(source_name)

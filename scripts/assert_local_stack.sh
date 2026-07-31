@@ -23,27 +23,58 @@ port_from_env() {
   local key="$1" fallback="$2" value=""
   [[ -f "$ENV_FILE" ]] && value="$(awk -v k="$key" \
     'index($0, k "=") == 1 { print substr($0, length(k) + 2); exit }' "$ENV_FILE")"
-  echo "${value:-$fallback}"
+  value="${value:-$fallback}"
+  # A port may be written `127.0.0.1:3100` — scripts/render_env_from_ssm.sh does
+  # exactly that on the instance, and Makefile's `status` target already strips
+  # it the same way. lsof rejects that form outright ("unacceptable port
+  # specification"), and the rejection used to be swallowed by `2>/dev/null ||
+  # true`, so every check silently became a no-op and the guard reported clean.
+  # A check that cannot fail is worse than no check.
+  value="${value##*:}"
+  if [[ ! "$value" =~ ^[0-9]+$ ]]; then
+    echo "  cannot read a port number for ${key} (got '${value}')" >&2
+    echo "unreadable"
+    return
+  fi
+  echo "$value"
 }
 
 # Who is listening, as a command name. Empty when the port is free, which is not
 # a problem: an unbound port means the stack simply is not up yet.
 listener_on() {
-  local port="$1"
+  local port="$1" out=""
   if command -v lsof >/dev/null 2>&1; then
-    lsof -nP -iTCP:"$port" -sTCP:LISTEN -Fc 2>/dev/null \
-      | sed -n 's/^c//p' | sort -u | paste -sd, - || true
-  else
-    # No lsof: report nothing rather than guessing. A guard that invents an
-    # answer is worse than one that admits it cannot check.
-    echo ""
+    # stderr is deliberately NOT discarded into the void: an lsof that refuses
+    # the argument must not look like an empty result set.
+    out="$(lsof -nP -iTCP:"$port" -sTCP:LISTEN -Fc 2>/dev/null | sed -n 's/^c//p' | sort -u | paste -sd, -)"
+    echo "$out"
+    return
   fi
+  if command -v ss >/dev/null 2>&1; then
+    # Linux (the instance). `users:(("sshd",pid=...))` -> the process names.
+    ss -H -ltnp "sport = :${port}" 2>/dev/null \
+      | grep -oE 'users:\(\("[^"]+"' | sed 's/.*"\(.*\)"*/\1/' | tr -d '"' | sort -u | paste -sd, -
+    return
+  fi
+  # Neither tool: say so rather than returning "" , which check_port would read
+  # as "port free" and pass.
+  echo "unknown"
 }
 
 FAILED=0
 check_port() {
   local port="$1" label="$2" who proc
+  if [[ "$port" == "unreadable" ]]; then
+    FAILED=1
+    echo "  ${label}: could not determine which port to check" >&2
+    return
+  fi
   who="$(listener_on "$port")"
+  if [[ "$who" == "unknown" ]]; then
+    FAILED=1
+    echo "  ${label} (port ${port}): no lsof and no ss, so nothing could be checked" >&2
+    return
+  fi
   [[ -z "$who" ]] && return 0
   # Every listener must be Docker, not merely one of them. This is the whole
   # bug: a tunnel binds 127.0.0.1 while Docker binds 0.0.0.0, so BOTH answer on
