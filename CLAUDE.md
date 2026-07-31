@@ -156,6 +156,30 @@ The pools are created by `airflow-init` from the specs, so a source added while 
 stack is up needs `docker compose up airflow-init` (or `make up`) before its DAG
 can acquire one.
 
+**`localhost` names a port, not an instance.** `make tunnels` forwards the
+instance's services to **3200/8180/8181/8224**, deliberately clear of the local
+stack's 3100/8080/8081/8124. They used to be the same numbers, and an SSH tunnel
+binds `127.0.0.1` while Docker binds `0.0.0.0` — loopback wins, so with both
+running `localhost:3100` silently *was* production while every container kept
+serving underneath. `make bootstrap` rotated the instance's Metabase API key
+that way, believing it was talking to a laptop, and nothing in the output said
+otherwise.
+
+Two guards enforce it, because the port separation only holds for tunnels this
+repo opened:
+
+- `scripts/assert_local_stack.sh` (via `make up` / `make bootstrap`) refuses
+  when *any* non-Docker process shares one of the stack's ports. Every listener
+  must be Docker — checking that one of them is passes a live tunnel, which is
+  how the first version of the check failed.
+- `ingest run` refuses a production-destination run whose warehouse host is
+  loopback. Inside the containers compose injects `warehouse-db`, so the
+  legitimate paths never see it. `--destination duckdb` is exempt.
+
+Neither is bypassable by accident: `DS_SKIP_LOCAL_CHECK` and
+`DS_ALLOW_HOST_INGEST` exist, and both mean "I have checked by hand which
+instance this reaches."
+
 **`warehouse-data` and `dlt-state` are a matched pair.** The cursor describes
 data in the warehouse. Destroy one without the other and the pipeline believes
 it already loaded rows that no longer exist.
