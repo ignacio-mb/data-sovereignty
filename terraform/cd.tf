@@ -7,14 +7,15 @@ locals {
 
   desired_sha_parameter = "${var.ssm_parameter_prefix}/deploy/desired_sha"
 
-  # Kept for the deploy document's description only — the trust policy matches
-  # the individual claims instead, because GitHub does not guarantee this
-  # string's shape. See the conditions in aws_iam_policy_document.cd_assume.
-  #
   # The full subject, not a prefix. `repo:owner/name:*` would match every
   # branch and every pull request in the repository, which is the usual way
   # this pattern is got wrong.
   oidc_subject = "repo:${var.github_repository}:environment:${var.github_environment}"
+
+  # GitHub also issues the subject with the ids inline; see the sub condition in
+  # aws_iam_policy_document.cd_assume for why both spellings must be accepted.
+  github_repository_owner = split("/", var.github_repository)[0]
+  github_repository_name  = split("/", var.github_repository)[1]
 }
 
 resource "aws_iam_openid_connect_provider" "github" {
@@ -55,23 +56,39 @@ data "aws_iam_policy_document" "cd_assume" {
       values   = ["sts.amazonaws.com"]
     }
 
-    # Matched claim by claim rather than against the composite `sub`, which is
-    # not a stable string. GitHub can issue the subject with the owner and
-    # repository ids embedded inline —
+    # `sub` has to be constrained here, and it has to be StringLike.
     #
-    #   repo:owner@132273646/name@1316246347:environment:production
-    #
-    # rather than the documented `repo:owner/name:environment:production`. A
-    # StringEquals on the composite form then never matches, and the only
+    # GitHub may issue the subject with the owner and repository ids embedded
+    # inline — `repo:owner@132273646/name@1316246347:environment:production` —
+    # rather than the documented `repo:owner/name:environment:production`. An
+    # equality test on the documented form then never matches, and the only
     # symptom is `AccessDenied ... Not authorized to perform
     # sts:AssumeRoleWithWebIdentity` from a workflow that is configured
-    # correctly. Merge-to-deploy never once worked in this repository because of
-    # it, and the actual subject is only visible in the CloudTrail event's
+    # correctly. That is why merge-to-deploy never once worked here, and the
+    # real subject appears in exactly one place: the CloudTrail event's
     # userIdentity.principalId.
     #
-    # These four conditions together are strictly narrower than the subject was:
-    # they pin the repository, the environment, and the two ids the subject
-    # merely concatenated.
+    # Dropping `sub` for the individual claims is not an option — IAM rejects
+    # the policy outright:
+    #
+    #   MalformedPolicyDocument: Trust policy with trusted principal
+    #   ...token.actions.githubusercontent.com must evaluate, using StringEquals,
+    #   StringLike or StringEqualsIgnoreCase, ...:sub or ...:job_workflow_ref
+    #   which is not scoped to all.
+    #
+    # So both spellings are listed, as patterns rather than one guessed string.
+    # The wildcards are only where the ids go, and `repository_id` /
+    # `repository_owner_id` below pin those exactly, so this is no looser than
+    # the equality test it replaces.
+    condition {
+      test     = "StringLike"
+      variable = "token.actions.githubusercontent.com:sub"
+      values = [
+        local.oidc_subject,
+        "repo:${local.github_repository_owner}@*/${local.github_repository_name}@*:environment:${var.github_environment}",
+      ]
+    }
+
     condition {
       test     = "StringEquals"
       variable = "token.actions.githubusercontent.com:repository"
