@@ -1789,7 +1789,7 @@ source = { editable = "pipeline" }
 dependencies = [
     { name = "beautifulsoup4" },
     { name = "click" },
-    { name = "dlt", extra = ["clickhouse"] },
+    { name = "dlt", extra = ["clickhouse", "duckdb"] },
     { name = "pendulum" },
     { name = "python-dotenv" },
     { name = "pyyaml" },
@@ -1797,7 +1797,6 @@ dependencies = [
 
 [package.dev-dependencies]
 dev = [
-    { name = "dlt", extra = ["duckdb"] },
     { name = "pytest" },
     { name = "requests-mock" },
     { name = "ruff" },
@@ -1808,6 +1807,7 @@ requires-dist = [
     { name = "beautifulsoup4", specifier = ">=4.12" },
     { name = "click", specifier = ">=8.1" },
     { name = "dlt", extras = ["clickhouse"], specifier = ">=1.28.1,<2" },
+    { name = "dlt", extras = ["duckdb"], specifier = ">=1.28.1,<2" },
     { name = "pendulum", specifier = ">=3.0" },
     { name = "python-dotenv", specifier = ">=1.0" },
     { name = "pyyaml", specifier = ">=6" },
@@ -1815,7 +1815,6 @@ requires-dist = [
 
 [package.metadata.requires-dev]
 dev = [
-    { name = "dlt", extras = ["duckdb"], specifier = ">=1.28.1,<2" },
     { name = "pytest", specifier = ">=8" },
     { name = "requests-mock", specifier = ">=1.12" },
     { name = "ruff", specifier = ">=0.6" },

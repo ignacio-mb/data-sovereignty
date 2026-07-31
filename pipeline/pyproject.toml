@@ -5,6 +5,12 @@ description = "Spec-driven REST ingestion into ClickHouse (dlt)"
 requires-python = ">=3.11"
 dependencies = [
     "dlt[clickhouse]>=1.28.1,<2",
+    # A runtime dependency, not a test one: `ingest run --destination duckdb` is
+    # the rehearsal every new connector goes through before it is pointed at the
+    # warehouse, and the add-source runbook tells you to run it in the CLI
+    # container. With duckdb only in the dev group that command failed there,
+    # which pushes the one safe rehearsal onto the host or skips it entirely.
+    "dlt[duckdb]>=1.28.1,<2",
     "beautifulsoup4>=4.12",
     "click>=8.1",
     "pendulum>=3.0",
@@ -19,7 +25,6 @@ ingest = "ingest_runtime.cli:cli"
 dev = [
     "pytest>=8",
     "requests-mock>=1.12",
-    "dlt[duckdb]>=1.28.1,<2",
     "ruff>=0.6",
 ]
 
