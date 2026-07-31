@@ -80,9 +80,9 @@ class TestWhatThisCheckoutShips:
 
     def test_the_connected_sources_are_the_ones_we_expect(self):
         specs = sorted(p.stem for p in (REPO / "sources").glob("*.yml"))
-        assert specs == ["swoogo"], (
+        assert specs == ["customerio", "swoogo"], (
             f"sources/ holds {specs}. Every spec here ships connected: it schedules "
-            f"an unpaused hourly DAG and needs its token_env set, on every clone of "
+            f"an unpaused DAG and needs its token_env set, on every clone of "
             f"this repo. If that is intended, update this list and the description "
             f"in CLAUDE.md and README.md; if not, move the spec to "
             f".claude/skills/add-source/reference/ where pylon.yml lives."
