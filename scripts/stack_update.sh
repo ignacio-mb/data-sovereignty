@@ -295,9 +295,27 @@ mapfile -t COMPOSE_REQUIRED < <(
     | grep -oE '\$\{[A-Z_][A-Z0-9_]*\}' | tr -d '${}' | sort -u
 )
 
+# Source credentials are invisible to the scan above, and that is structural
+# rather than an oversight: a spec's token is deliberately NOT referenced in
+# docker-compose.yml — the containers read .env wholesale, which is what makes
+# connecting a source one line in .env and no compose edit. So the very design
+# that makes a credential easy to add is what stops this check from noticing it
+# is absent.
+#
+# Derived exactly the way scripts/secrets_push.sh derives what to push, so the
+# two halves cannot drift. Without it a source connected after the host was
+# provisioned deploys with no credential, the re-render below never fires
+# because every compose variable is present, and the only symptom is an hourly
+# DAG failing on `<NAME> is not set` — which is precisely what happened the
+# first time Swoogo reached this instance.
+mapfile -t SOURCE_REQUIRED < <(
+  grep -hoE '^[[:space:]]*token_env:[[:space:]]*[A-Za-z_][A-Za-z0-9_]*' sources/*.yml 2>/dev/null \
+    | awk '{ print $2 }' | sort -u
+)
+
 env_before="$(sha256sum .env | cut -d' ' -f1)"
 missing=()
-for key in "${COMPOSE_REQUIRED[@]}"; do
+for key in "${COMPOSE_REQUIRED[@]}" ${SOURCE_REQUIRED[@]+"${SOURCE_REQUIRED[@]}"}; do
   printf '%s\n' "${MAY_BE_EMPTY[@]}" | grep -qx "$key" && continue
   [[ -n "$(env_value "$key")" ]] || missing+=("$key")
 done

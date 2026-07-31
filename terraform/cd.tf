@@ -11,6 +11,11 @@ locals {
   # branch and every pull request in the repository, which is the usual way
   # this pattern is got wrong.
   oidc_subject = "repo:${var.github_repository}:environment:${var.github_environment}"
+
+  # GitHub also issues the subject with the ids inline; see the sub condition in
+  # aws_iam_policy_document.cd_assume for why both spellings must be accepted.
+  github_repository_owner = split("/", var.github_repository)[0]
+  github_repository_name  = split("/", var.github_repository)[1]
 }
 
 resource "aws_iam_openid_connect_provider" "github" {
@@ -51,10 +56,52 @@ data "aws_iam_policy_document" "cd_assume" {
       values   = ["sts.amazonaws.com"]
     }
 
+    # `sub` has to be constrained here, and it has to be StringLike.
+    #
+    # GitHub may issue the subject with the owner and repository ids embedded
+    # inline — `repo:owner@132273646/name@1316246347:environment:production` —
+    # rather than the documented `repo:owner/name:environment:production`. An
+    # equality test on the documented form then never matches, and the only
+    # symptom is `AccessDenied ... Not authorized to perform
+    # sts:AssumeRoleWithWebIdentity` from a workflow that is configured
+    # correctly. That is why merge-to-deploy never once worked here, and the
+    # real subject appears in exactly one place: the CloudTrail event's
+    # userIdentity.principalId.
+    #
+    # Dropping `sub` for the individual claims is not an option — IAM rejects
+    # the policy outright:
+    #
+    #   MalformedPolicyDocument: Trust policy with trusted principal
+    #   ...token.actions.githubusercontent.com must evaluate, using StringEquals,
+    #   StringLike or StringEqualsIgnoreCase, ...:sub or ...:job_workflow_ref
+    #   which is not scoped to all.
+    #
+    # So both spellings are listed, as patterns rather than one guessed string.
+    # The wildcards are only where the ids go, and `repository_id` /
+    # `repository_owner_id` below pin those exactly, so this is no looser than
+    # the equality test it replaces.
+    condition {
+      test     = "StringLike"
+      variable = "token.actions.githubusercontent.com:sub"
+      values = [
+        local.oidc_subject,
+        "repo:${local.github_repository_owner}@*/${local.github_repository_name}@*:environment:${var.github_environment}",
+      ]
+    }
+
     condition {
       test     = "StringEquals"
-      variable = "token.actions.githubusercontent.com:sub"
-      values   = [local.oidc_subject]
+      variable = "token.actions.githubusercontent.com:repository"
+      values   = [var.github_repository]
+    }
+
+    # Scopes deploys to the environment, which is what the subject was doing.
+    # Absent from the token when a job declares no environment, so a workflow
+    # that forgets `environment:` is denied rather than quietly trusted.
+    condition {
+      test     = "StringEquals"
+      variable = "token.actions.githubusercontent.com:environment"
+      values   = [var.github_environment]
     }
 
     # The repository *name* is released for anyone to re-register once it is

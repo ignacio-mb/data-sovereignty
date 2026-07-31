@@ -204,8 +204,15 @@ variable "github_repository" {
 variable "github_environment" {
   description = <<-EOT
     The GitHub Environment the deploy job declares. The trust policy matches
-    the fully-qualified subject `repo:<repo>:environment:<env>`, which is what
-    keeps a fork PR — or any other branch — from assuming the role.
+    the `environment` claim directly, which is what keeps a fork PR — or any
+    other branch — from assuming the role. A job that declares no environment
+    omits the claim entirely and is denied.
+
+    It used to match the composite `sub` instead. Do not go back: GitHub may
+    issue that subject with the owner and repository ids embedded inline
+    (`repo:owner@123/name@456:environment:production`), so an equality test on
+    the documented form silently never matches, and the only place the real
+    value appears is CloudTrail.
   EOT
   type        = string
   default     = "production"
