@@ -12,9 +12,10 @@ it runs, and what "arrived correctly" means. The runtime turns that into dlt col
 hints, a rate-limit pacer, a record transformer and a REST source.
 `.claude/skills/add-source/reference/pylon.yml` is a complete worked example.
 
-The repo ships with no specs, so a fresh checkout ingests nothing.
+Every spec in `sources/` is connected and schedules DAGs. Swoogo ships that way;
+a fork that is not ours should delete it.
 
-## Three fetch strategies
+## Four fetch strategies
 
 Strategies are code rather than configuration because each is an algorithm, not a
 setting.
@@ -35,7 +36,17 @@ worklist comes from the warehouse: children whose parent changed more recently t
 the newest child already loaded. It is evaluated at extract time, after this run's
 parents have landed.
 
-The last two are **not** built declaratively: a spec declaring one must also declare
+**`parent_fanout`** is for a child endpoint that exists but is scoped to one parent,
+so it has to be called once per parent — Swoogo's `/registrants?event_id=…`. It
+differs from `parent_watermark` in what drives the worklist: EVERY in-scope parent is
+visited each run, and the child's own cursor bounds what comes back. The watermark
+rule would lose rows here, because a child changing need not touch its parent's
+`updated_at` — a new registrant does not modify the event it registered for.
+`incremental.cursor_field` is optional: omit it and the resource is re-read in full
+per parent, which is the honest answer for an endpoint whose timestamps are mostly
+null.
+
+The last three are **not** built declaratively: a spec declaring one must also declare
 an `extensions:` module and supply the Python that fetches it. `build_source` raises
 rather than skipping the resource — a connector that quietly drops an endpoint looks
 exactly like one whose source has no data.

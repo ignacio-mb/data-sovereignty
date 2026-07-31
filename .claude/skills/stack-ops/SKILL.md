@@ -24,10 +24,17 @@ Anything showing `=` with nothing after it needs the user. Ask for all missing o
 in a single question; do not ask them to paste values into the chat if you can avoid
 it — tell them to edit `.env` directly, then continue.
 
-Those two are all the stack itself needs. **Source credentials are not part of
-setup**, because no source ships connected: each spec names the variable holding its
-token in `api.auth.token_env`, and `add-source` says which name to add when a source
-is connected.
+Those two are all the stack itself needs. **Source credentials are separate**: each
+spec names the variable holding its token in `api.auth.token_env`, and `add-source`
+says which name to add when a source is connected.
+
+They are not optional once a source ships, though. Check what `sources/` holds
+before declaring setup done — anything there schedules an unpaused hourly DAG that
+fails without its credential:
+
+```bash
+grep -h '^ *token_env:' sources/*.yml 2>/dev/null | awk '{print $2}'
+```
 
 ```bash
 make build   # ~5-10 min the first time

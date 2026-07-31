@@ -9,10 +9,20 @@ no transforms, no marts, no metrics, no semantic layer. What the rows *mean* is
 decided in whatever project owns the warehouse's meaning, and keeping the seam
 there is deliberate — scheduling someone else's model is owning it.
 
-**It also ships empty.** No source is connected on a fresh checkout, so nothing
-is scheduled and nothing is fetched until someone adds a spec. Pylon appears only
-as a worked reference example for an agent to copy
-(`.claude/skills/add-source/reference/pylon.yml`); nothing bootstraps it.
+**One source ships connected: Swoogo** (`sources/swoogo.yml`), because this
+checkout is also where it is operated from. Everything in `sources/` is live —
+each spec generates an unpaused hourly ingest DAG plus backfill and reconcile
+DAGs on any stack that comes up, and needs the variable in its `token_env` set
+or that DAG fails every hour. So a fork gets Swoogo whether it wants it or not:
+**delete `sources/swoogo.yml` if you are not us**, and the stack goes back to
+scheduling nothing.
+
+`airflow/tests/test_dag_integrity.py::TestWhatThisCheckoutShips` pins the list,
+so adding or removing a spec fails a test until this paragraph agrees with it.
+
+Pylon is the other shape: a worked reference example for an agent to copy
+(`.claude/skills/add-source/reference/pylon.yml`), deliberately NOT in
+`sources/` so nothing schedules it.
 
 **Start with `.claude/skills/data-stack/SKILL.md`** — it routes to the right leaf
 skill for the task. This file is the map and the rules; the skills are the
@@ -107,11 +117,12 @@ does change hourly can set `severity: error` and gate on it.
 
 ## Hard rules
 
-**The repo ships with no sources, and that is a feature.** `sources/` is empty,
-so no ingest DAG exists and nothing runs. Do not add a spec to `sources/` to
-demonstrate something — put it in a skill's `reference/` directory, which is
-where the Pylon example lives. A repo that arrives running someone else's
-connector is worse than one that arrives running none.
+**Never add a spec to `sources/` to demonstrate something.** Anything there is
+connected: it schedules an unpaused hourly DAG and demands a credential on every
+clone, so a spec added to illustrate a point becomes someone else's failing DAG.
+Examples go in a skill's `reference/` directory, where Pylon lives. The bar for
+`sources/` is "we actually run this" — today that is Swoogo alone, and
+`TestWhatThisCheckoutShips` fails until the list and the docs agree.
 
 **Nothing here models the data.** No transforms, no marts, no metrics, no
 semantic layer, and no DAG task that builds one. If a task would make this
@@ -235,8 +246,16 @@ docker compose --profile cli run --rm airflow-cli airflow dags test stack_smoke
 
 DAG tests need Airflow, which is deliberately outside the default environment:
 `make test-dags` (or `uv sync --group dag-tests && uv run pytest airflow/tests`).
-They assert the shipped state schedules only `stack_smoke`, and generate DAGs from
-the skill's reference spec to check the invariants that protect the warehouse.
+They pin which specs `sources/` ships, generate DAGs from the skill's reference
+spec to check the invariants that protect the warehouse, and separately assert
+that a directory with no specs schedules only `stack_smoke`.
+
+That last one is a property of the generator, not of this checkout, and used to
+be described here as a guarantee about the shipped state. It never was: the
+fixture points at an empty `tmp_path`, so it passed identically whatever
+`sources/` contained — which is how a connected source and four documents
+claiming an empty one coexisted. `TestWhatThisCheckoutShips` is the one that
+reads the real directory.
 
 The deploy path cannot be exercised on a laptop. What can:
 

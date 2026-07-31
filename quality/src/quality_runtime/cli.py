@@ -33,9 +33,31 @@ def cli(verbose):
     _setup_logging(verbose)
 
 
+# The twin of the ingest CLI's guard, and the reason it is shared rather than
+# copied: `dq` reads the same DESTINATION__CLICKHOUSE__CREDENTIALS__HOST, has the
+# same `localhost` default, and unlike `ingest` it runs CREATE DATABASE/TABLE and
+# INSERTs into ops. For a while `ingest run` refused a loopback warehouse and
+# `dq run` next to it did not, which is the worst possible split: the operator
+# concludes host-side commands are guarded.
+def _refuse_if_loopback(action):
+    from ingest_runtime.locality import RemoteWarehouseRefused, refuse_loopback_warehouse
+
+    try:
+        refuse_loopback_warehouse(
+            action,
+            "DS_ALLOW_HOST_DQ",
+            "  Inside the stack, where the address is unambiguous:\n"
+            "      make quality SOURCE=<name>\n"
+            "      docker compose --profile cli run --rm airflow-cli dq <command>\n",
+        )
+    except RemoteWarehouseRefused as error:
+        raise click.ClickException(str(error)) from error
+
+
 @cli.command("ops-init")
 def ops_init():
     """Create the ops schema and its tables. Idempotent."""
+    _refuse_if_loopback("a dq ops-init against the production warehouse")
     from .ops_schema import init
 
     for table in init():
@@ -48,6 +70,7 @@ def ops_init():
               help="Outcome of the ingest task this summary came from.")
 def record_run(summary_json, status):
     """Record an `ingest run --summary-json` file into ops.pipeline_runs."""
+    _refuse_if_loopback("a dq record-run against the production warehouse")
     from .run_log import record
 
     with open(summary_json) as handle:
@@ -92,6 +115,8 @@ def list_sources():
               help="Exit non-zero when an expectation fails.")
 def run(source_name, fail_on_error):
     """Validate a source's raw tables and record the results in ops.gx_results."""
+    _refuse_if_loopback("a dq run against the production warehouse")
+
     from ingest_runtime.spec import SpecError, load
 
     from . import results as results_module
