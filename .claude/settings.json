@@ -1,0 +1,20 @@
+{
+  "permissions": {
+    "deny": [
+      "Read(./.env)",
+      "Read(./.env.local)",
+      "Read(./.env.*.local)",
+      "Read(./.deploy.env)",
+      "Read(./**/.dlt/secrets.toml)",
+      "Read(./terraform/terraform.tfvars)",
+      "Read(./terraform/*.tfstate)",
+      "Read(./terraform/*.tfstate.*)",
+      "Bash(cat .env*)",
+      "Bash(cat ./.env*)",
+      "Bash(head .env*)",
+      "Bash(tail .env*)",
+      "Bash(less .env*)",
+      "Bash(more .env*)"
+    ]
+  }
+}

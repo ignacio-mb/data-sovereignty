@@ -127,12 +127,6 @@ class TestReferenceExample:
         assert "directory" in families
 
 
-def test_the_repo_ships_with_no_sources_connected():
-    """A fresh checkout ingests nothing. Someone connects a source deliberately;
-    the stack does not arrive pretending to have one."""
-    assert spec.available() == [], f"unexpected specs in {spec.sources_dir()}"
-
-
 def test_the_sources_directory_exists_and_is_where_it_should_be():
     assert spec.sources_dir().is_dir(), spec.sources_dir()
     assert isinstance(spec.REPO_ROOT, pathlib.Path)

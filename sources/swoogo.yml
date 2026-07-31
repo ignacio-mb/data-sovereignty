@@ -1,0 +1,409 @@
+# Swoogo — event management: events and everything hanging off them.
+#
+# Two things about this API shape the whole file, and both are easy to get
+# wrong quietly:
+#
+#   1. Almost every endpoint is scoped to ONE event. Only /events and /contacts
+#      are account-wide; the other twelve require `event_id`, so they are
+#      fetched once per event (strategy: parent_fanout, see extensions).
+#
+#   2. Every endpoint returns a SPARSE default projection. /events with no
+#      `fields` returns `id, name` — no updated_at, no dates, nothing. So the
+#      `fields` list on each resource is load-bearing, not an optimisation:
+#      drop it and the incremental cursor column stops existing, and the
+#      failure looks like "the source never changes" rather than an error.
+
+name: swoogo
+display_name: Swoogo
+docs_url: https://swoogo.readme.io
+
+api:
+  base_url: https://api.swoogo.com/api/v1
+  auth:
+    # Bearer tokens last 30 minutes, so the credential below is not the token —
+    # it is what mints one, re-minted automatically when it expires.
+    #
+    # SWOOGO_ENCODED_CREDENTIALS is Swoogo's own pre-encoded
+    # base64(urlencode(key):urlencode(secret)) string, copied verbatim from
+    # My Profile > API Credentials. Taking it whole rather than assembling it
+    # from the key and secret removes the only step that can silently produce a
+    # credential that does not work: any reserved character in the secret
+    # changes the encoding.
+    type: oauth2_client_credentials
+    token_env: SWOOGO_ENCODED_CREDENTIALS
+    token_url: https://api.swoogo.com/api/v1/oauth2/token
+    credentials_in: basic_header
+
+# ONE budget for the whole connector, because Swoogo's limit is per credential
+# and not per endpoint: 2000 credits / 10 minutes, and a list call costs 10.
+# That is 200 list calls per 10 minutes = 20/minute, shared by every resource
+# below. Giving each its own family would hand out fourteen budgets where the
+# API grants one, and the connector would 429 mid-fan-out.
+rate_limits:
+  swoogo: 20
+
+orchestration:
+  schedule: "23 * * * *"        # :23 — clear of :00 and of Pylon's :17
+  backfill_start: "2014-01-01"  # all events ever; Swoogo predates our account
+  reconcile: "0 4 * * 6"        # Saturday 04:00 UTC, full history + tombstones
+  pool: swoogo_pipeline         # size 1: concurrent runs would race the cursor
+  timeouts_minutes:
+    ingest: 55                  # must stay under the hour or runs queue on the pool
+    backfill: 1440              # fan-out over all events at 20 req/min is slow
+    reconcile: 1440
+
+# Page-number paging, uniform across the API. Declared as a raw dlt paginator
+# config because `kind: page_number` is not one of the runtime's shorthands.
+pagination:
+  kind:
+    type: page_number
+    base_page: 1
+    page_param: page
+    total_path: _meta.pageCount
+  data_selector: items
+
+resources:
+  # ── account-wide ──────────────────────────────────────────────────────────
+  # The only two endpoints that do not take an event_id, so the only two the
+  # declarative path can fetch on its own.
+
+  - name: events
+    primary_key: id
+    write_disposition: merge
+    # Fully re-fetched every run and small, so absence really does mean deleted.
+    soft_delete: always
+    endpoint:
+      path: /events
+      page_size: 200
+      page_size_param: per-page
+      family: swoogo
+      params:
+        fields: id,name,status,type_id,folder_id,organizer_id,start_date,start_time,end_date,end_time,close_date,close_time,timezone,capacity,target_attendance,free_event,hashtag,domain,url,webinar_url,description,created_at,created_by,updated_at,updated_by
+    timestamp_columns: [created_at, updated_at]
+    # Both hinted: updated_at is the freshness column, and created_at is
+    # compared when scoping a backfill.
+    hint_columns: [created_at, updated_at]
+
+  - name: contacts
+    primary_key: id
+    write_disposition: merge
+    soft_delete: always
+    endpoint:
+      path: /contacts
+      page_size: 200
+      page_size_param: per-page
+      family: swoogo
+      params:
+        fields: id,account_id,email,prefix,first_name,middle_name,last_name,suffix,company,job_title,work_phone,mobile_phone,profile_picture,twitter_handle,gender,birth_date,cc_email,bio,vat_number,notes,subscribe_status,created_at,updated_at
+    timestamp_columns: [created_at, updated_at]
+    hint_columns: [created_at, updated_at]
+
+  # ── per-event ─────────────────────────────────────────────────────────────
+  # All of these require event_id, so each is fetched once per event, with the
+  # child's own updated_at bounding what comes back. soft_delete is omitted
+  # throughout: an incremental fan-out sees only the changed slice of each
+  # event, so absence carries no information and tombstoning on it would wipe
+  # every row that simply did not change this hour. The Saturday reconcile is
+  # what fetches full history.
+
+  - name: registrants
+    primary_key: id
+    write_disposition: merge
+    incremental:
+      strategy: parent_fanout
+      parent: events
+      cursor_field: updated_at
+      lookback_seconds: 3600      # merge on id makes the re-fetched overlap idempotent
+      endpoint:
+        path: /registrants
+        page_size: 200
+        page_size_param: per-page
+        family: swoogo
+        params:
+          # Verified against the live API: Swoogo IGNORES field names it does
+          # not know rather than rejecting them, so a name that does not exist
+          # costs a column and returns 200. The personal details (prefix,
+          # gender, birth_date, bio, vat_number …) are not registrant fields
+          # despite being documented as such — they live on `contacts`, reached
+          # through contact_id, and asking for them here returned nothing.
+          fields: id,event_id,group_id,reg_type_id,package_id,discount_code,email,first_name,last_name,company,job_title,work_phone,mobile_phone,profile_picture,contact_id,session_ids,waitlisted_session_ids,notes,reference,ip_address,individual_net,individual_tax,individual_tax_2,individual_gross,group_net,group_tax,group_tax_2,group_gross,group_paid,created_at,updated_at,registered_at,cancelled_at,checked_in_at,ext_token,secure_id,timezone,registration_status,language,payment_method,po_number,group_balance_due,payment_status
+    timestamp_columns:
+      [created_at, updated_at, registered_at, cancelled_at, checked_in_at]
+    # Only the two the fan-out compares. The lifecycle stamps are parsed for
+    # analysis but nothing here branches on them, so they stay inferred.
+    hint_columns: [created_at, updated_at]
+
+  - name: transactions
+    primary_key: id
+    write_disposition: merge
+    incremental:
+      strategy: parent_fanout
+      parent: events
+      cursor_field: updated_at
+      lookback_seconds: 3600
+      endpoint:
+        path: /transactions
+        page_size: 200
+        page_size_param: per-page
+        family: swoogo
+        params:
+          # currency, payment_method_fee and order_number are documented but not
+          # recognised by the API — verified live. See the note on registrants.
+          fields: id,registrant_id,type,datetime,status,amount,card_type,card_number_last_4,name_on_card,notes,gateway_id,gateway_transaction_id,created_at,created_by,updated_at,updated_by
+    timestamp_columns: [created_at, updated_at, datetime]
+    hint_columns: [created_at, updated_at]
+
+  # The awkward one, and all of it verified against the live API rather than the
+  # docs. This endpoint returns no `id` and no `created_at` — both were
+  # requested and silently dropped — and `updated_at` is null on 528 of 530
+  # rows, because Swoogo only stamps it when a line item is edited after
+  # creation.
+  #
+  # So there is no cursor: bounding on updated_at would filter out the 99.6% of
+  # rows that have none, and every line item written and never edited after the
+  # first load would be missed permanently. It is re-read in full instead, which
+  # at 530 rows is three requests.
+  #
+  # The key is composite because the API supplies no surrogate. Verified unique
+  # across all 530 rows before being trusted: merging on a non-unique key drops
+  # rows silently, which is the failure this whole file is written to avoid.
+  - name: registrant_line_items
+    primary_key: [registrant_id, object, object_id]
+    write_disposition: merge
+    incremental:
+      strategy: parent_fanout
+      parent: events
+      endpoint:
+        path: /registrant-line-items
+        page_size: 200
+        page_size_param: per-page
+        family: swoogo
+        params:
+          fields: registrant_id,object,object_id,group_id,net,tax,tax_rate,gross,datetime,full_price_net,full_price_gross,question_id,quantity,status,updated_at
+    timestamp_columns: [updated_at, datetime]
+    hint_columns: [updated_at]
+
+  - name: reg_types
+    primary_key: id
+    write_disposition: merge
+    incremental:
+      strategy: parent_fanout
+      parent: events
+      cursor_field: updated_at
+      lookback_seconds: 3600
+      endpoint:
+        path: /reg-types
+        page_size: 200
+        page_size_param: per-page
+        family: swoogo
+        params:
+          fields: id,name,public_short_name,admin_short_name,description,capacity,sold_out_message,min_group_size,max_group_size,created_at,updated_at
+    timestamp_columns: [created_at, updated_at]
+    hint_columns: [created_at, updated_at]
+
+  - name: sessions
+    primary_key: id
+    write_disposition: merge
+    incremental:
+      strategy: parent_fanout
+      parent: events
+      cursor_field: updated_at
+      lookback_seconds: 3600
+      endpoint:
+        path: /sessions
+        page_size: 200
+        page_size_param: per-page
+        family: swoogo
+        params:
+          fields: id,event_id,name,admin_short_name,badge_name,description,date,start_time,end_time,use_event_timezone,timezone,capacity,location_id,track_id,selection_control,webinar_url,sold_out_message,secure_id,session_status,locked_when_saved,selected_by_default,prevent_session_conflicts,created_at,updated_at
+    timestamp_columns: [created_at, updated_at]
+    hint_columns: [created_at, updated_at]
+
+  # No `id` is documented on an attendance record — it is the join between a
+  # session and a registrant, and that pair is the identity. Declared composite
+  # rather than invented, because a merge on a key the API does not return
+  # would append a duplicate row on every single run.
+  - name: session_attendances
+    primary_key: [session_id, registrant_id]
+    write_disposition: merge
+    incremental:
+      strategy: parent_fanout
+      parent: events
+      cursor_field: updated_at
+      lookback_seconds: 3600
+      endpoint:
+        path: /session-attendances
+        page_size: 200
+        page_size_param: per-page
+        family: swoogo
+        params:
+          fields: session_id,registrant_id,waiting_room_date,check_in_date,check_out_date,duration,on_demand_date,physical_arrived_at,virtual_arrived_at,virtual_departed_at,virtual_duration,has_physical_checkin,has_virtual_checkin,created_at,updated_at
+    timestamp_columns:
+      [created_at, updated_at, check_in_date, check_out_date, waiting_room_date,
+       on_demand_date, physical_arrived_at, virtual_arrived_at, virtual_departed_at]
+    hint_columns: [created_at, updated_at]
+
+  - name: sponsors
+    primary_key: id
+    write_disposition: merge
+    incremental:
+      strategy: parent_fanout
+      parent: events
+      cursor_field: updated_at
+      lookback_seconds: 3600
+      endpoint:
+        path: /sponsors
+        page_size: 200
+        page_size_param: per-page
+        family: swoogo
+        params:
+          fields: id,event_id,name,website,description,logo_id,level,webinar_url,video_url,notes,direct_link,created_at,updated_at
+    timestamp_columns: [created_at, updated_at]
+    hint_columns: [created_at, updated_at]
+
+  - name: locations
+    primary_key: id
+    write_disposition: merge
+    incremental:
+      strategy: parent_fanout
+      parent: events
+      cursor_field: updated_at
+      lookback_seconds: 3600
+      endpoint:
+        path: /locations
+        page_size: 200
+        page_size_param: per-page
+        family: swoogo
+        params:
+          fields: id,name,capacity,color,use_event_address,created_by,created_at,updated_by,updated_at
+    timestamp_columns: [created_at, updated_at]
+    hint_columns: [created_at, updated_at]
+
+  # ── narrow field lists, deliberately ──────────────────────────────────────
+  # Swoogo's reference does not enumerate the schema for the four below — it
+  # documents the `fields` parameter without saying what may go in it. These
+  # therefore ask only for names the docs actually confirm, so the tables land
+  # correct-but-narrow rather than broad-and-guessed. Widen them by reading a
+  # record back from the live API and adding the names it really returns —
+  # never by copying a plausible list from a neighbouring endpoint.
+
+  - name: speakers
+    primary_key: id
+    write_disposition: merge
+    incremental:
+      strategy: parent_fanout
+      parent: events
+      cursor_field: updated_at
+      lookback_seconds: 3600
+      endpoint:
+        path: /speakers
+        page_size: 200
+        page_size_param: per-page
+        family: swoogo
+        params:
+          fields: id,first_name,last_name,created_at,updated_at
+    timestamp_columns: [created_at, updated_at]
+    hint_columns: [created_at, updated_at]
+
+  - name: tracks
+    primary_key: id
+    write_disposition: merge
+    incremental:
+      strategy: parent_fanout
+      parent: events
+      cursor_field: updated_at
+      lookback_seconds: 3600
+      endpoint:
+        path: /tracks
+        page_size: 200
+        page_size_param: per-page
+        family: swoogo
+        params:
+          fields: id,name,created_at,updated_at
+    timestamp_columns: [created_at, updated_at]
+    hint_columns: [created_at, updated_at]
+
+  - name: packages
+    primary_key: id
+    write_disposition: merge
+    incremental:
+      strategy: parent_fanout
+      parent: events
+      cursor_field: updated_at
+      lookback_seconds: 3600
+      endpoint:
+        path: /packages
+        page_size: 200
+        page_size_param: per-page
+        family: swoogo
+        params:
+          fields: id,name,capacity,created_at,updated_at
+    timestamp_columns: [created_at, updated_at]
+    hint_columns: [created_at, updated_at]
+
+  - name: discounts
+    primary_key: id
+    write_disposition: merge
+    incremental:
+      strategy: parent_fanout
+      parent: events
+      cursor_field: updated_at
+      lookback_seconds: 3600
+      endpoint:
+        path: /discounts
+        page_size: 200
+        page_size_param: per-page
+        family: swoogo
+        params:
+          fields: id,created_at,updated_at
+    timestamp_columns: [created_at, updated_at]
+    hint_columns: [created_at, updated_at]
+
+quality:
+  # Only events is required. Everything else is a fact about the account rather
+  # than about ingestion — an account with no sponsors has no sponsors table,
+  # and dlt only creates a table once a resource yields a row. events is the
+  # exception because the fan-out worklist comes from it: no events means every
+  # other resource is empty by construction, which is a broken connector rather
+  # than a quiet account.
+  required: [events]
+  freshness:
+    table: registrants
+    column: updated_at
+    hours: 24
+    # Advisory. Registrations arrive in bursts around each event and stop dead
+    # between them, so a quiet Tuesday is normal and gating on it would redden
+    # the DAG for a working pipeline.
+    severity: warn
+  max_deleted_fraction: 0.5
+  references:
+    - {child: registrants.event_id, parent: events.id}
+    - {child: registrants.contact_id, parent: contacts.id}
+    - {child: sessions.event_id, parent: events.id}
+    - {child: sessions.location_id, parent: locations.id}
+    - {child: sessions.track_id, parent: tracks.id}
+    - {child: transactions.registrant_id, parent: registrants.id}
+    # Advisory, and only after checking why it failed: Swoogo keeps line items
+    # for registrants it has deleted. 371 of 530 pointed at ids that /registrants
+    # 404s on, and /registrants reports the same 15 rows however it is queried —
+    # so this is the source retaining orphans, not the fan-out under-fetching.
+    # Kept rather than dropped because the count is still worth watching; a jump
+    # would mean something new.
+    - {child: registrant_line_items.registrant_id, parent: registrants.id, severity: warn}
+    - {child: session_attendances.session_id, parent: sessions.id}
+    - {child: session_attendances.registrant_id, parent: registrants.id}
+    - {child: sponsors.event_id, parent: events.id}
+  not_null:
+    events: [name, created_at]
+    registrants: [event_id, created_at]
+    transactions: [registrant_id, created_at]
+    session_attendances: [session_id, registrant_id]
+
+# Why this connector has Python at all:
+#
+#   worklist        twelve of the fourteen endpoints take an event_id, and the
+#                   declarative config has no way to say "call this once per
+#                   row of that other resource".
+#   search filter   the incremental bound is Swoogo's `search=updated_at>=…`
+#                   expression, built per request from the cursor.
+extensions: swoogo

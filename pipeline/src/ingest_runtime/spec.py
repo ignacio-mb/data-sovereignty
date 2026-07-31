@@ -40,7 +40,7 @@ _QUALITY_KEYS = {
 # Recognised is not the same as built. Only full_refresh is built declaratively
 # (runtime._DECLARATIVE_STRATEGIES); the other two must be supplied by the spec's
 # `extensions` module, and build_source raises when they are not.
-_STRATEGIES = {"search_window", "parent_watermark", "full_refresh"}
+_STRATEGIES = {"search_window", "parent_watermark", "parent_fanout", "full_refresh"}
 
 # When absence from a run's loads is allowed to mean "deleted upstream".
 #
@@ -122,7 +122,21 @@ class Resource:
 
     name = property(lambda self: self._entry["name"])
     primary_key = property(lambda self: self._entry["primary_key"])
-    endpoint = property(lambda self: self._entry.get("endpoint") or {})
+    @property
+    def endpoint(self):
+        """The resource's endpoint, wherever the strategy happened to declare it.
+
+        A strategy that fetches from one place may put it under `incremental`
+        rather than at the top level. Falling back matters beyond tidiness:
+        rate-limit families and request routing are both derived from this, so
+        a resource whose endpoint the fallback missed would quietly get its own
+        budget instead of sharing the one the API actually grants.
+
+        Strategies with more than one endpoint (search_window has two) are left
+        alone — there is no single answer, and guessing one would route half the
+        requests wrongly.
+        """
+        return self._entry.get("endpoint") or self.incremental.get("endpoint") or {}
     incremental = property(lambda self: self._entry.get("incremental") or {})
     promote = property(lambda self: self._entry.get("promote") or {})
     html_text = property(lambda self: self._entry.get("html_text") or {})

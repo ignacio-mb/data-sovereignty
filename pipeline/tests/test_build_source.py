@@ -9,7 +9,9 @@ through dlt's REST source, with no extension module involved.
 import duckdb
 import pytest
 import requests_mock as rm_module
+from click import exceptions as click_exceptions
 
+from ingest_runtime import cli as cli_module
 from ingest_runtime import runtime, spec
 from ingest_runtime.warehouse import build_pipeline
 
@@ -155,3 +157,30 @@ def test_a_strategy_needing_an_extension_refuses_without_one(tmp_path, monkeypat
     loaded = spec.load("n", directory=tmp_path)
     with pytest.raises(RuntimeError, match="declares no `extensions`"):
         runtime.build_source(loaded, selected=["a"])
+
+
+class TestHostSideProductionGuard:
+    """`localhost` names a port, not a machine.
+
+    An SSH tunnel to the instance binds loopback while Docker binds 0.0.0.0, so
+    the tunnel wins and a host-side production run writes to the instance with
+    nothing in the output to say so. That happened. The guard refuses the whole
+    class rather than trying to tell the two apart at the address level.
+    """
+
+    def test_a_loopback_warehouse_refuses_a_production_run(self, monkeypatch):
+        monkeypatch.setenv("DESTINATION__CLICKHOUSE__CREDENTIALS__HOST", "localhost")
+        monkeypatch.delenv("DS_ALLOW_HOST_INGEST", raising=False)
+        with pytest.raises(click_exceptions.ClickException, match="refusing a production-destination"):
+            cli_module._refuse_host_side_production_run()
+
+    def test_the_container_address_passes(self, monkeypatch):
+        """Compose injects `warehouse-db`, so a legitimate run never trips this."""
+        monkeypatch.setenv("DESTINATION__CLICKHOUSE__CREDENTIALS__HOST", "warehouse-db")
+        monkeypatch.delenv("DS_ALLOW_HOST_INGEST", raising=False)
+        cli_module._refuse_host_side_production_run()
+
+    def test_the_override_is_explicit(self, monkeypatch):
+        monkeypatch.setenv("DESTINATION__CLICKHOUSE__CREDENTIALS__HOST", "127.0.0.1")
+        monkeypatch.setenv("DS_ALLOW_HOST_INGEST", "1")
+        cli_module._refuse_host_side_production_run()

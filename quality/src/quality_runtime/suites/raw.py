@@ -133,8 +133,15 @@ def _soft_delete_sanity(table, fraction):
     )
 
 
-def _orphans(database, child_column, parent_table, parent_column, description):
+def _orphans(database, child_column, parent_table, parent_column, description, severity):
     """Child rows whose foreign key has no parent, as a LEFT ANTI JOIN.
+
+    Gates by default: a dangling key usually means the parent resource
+    under-fetched, which is a pipeline fault. Some APIs genuinely keep children
+    after deleting the parent, though — Swoogo serves line items for registrants
+    it 404s on — and there the edge is a property of the source, not a fault.
+    Such an edge sets `severity: warn` in the spec so the orphan count stays
+    visible without reddening every run for something that will never be fixed.
 
     Not a correlated `NOT EXISTS`, which is what this used to be: ClickHouse
     rejects a subquery that references an outer column with
@@ -162,7 +169,11 @@ def _orphans(database, child_column, parent_table, parent_column, description):
             f"ON parent.{parent_column} = child.{child_column} "
             f"WHERE child.{child_column} IS NOT NULL"
         ),
-        description=description,
+        description=description + (
+            " (advisory: the source itself retains children whose parent is gone)"
+            if severity == "warn" else ""
+        ),
+        meta={"severity": severity},
     )
 
 
@@ -243,6 +254,7 @@ def build(spec, present=None):
         suites[key].append(_orphans(
             database, child_column, parent_table, parent_column,
             f"every {child_table}.{child_column} resolves to a loaded {parent_table}",
+            edge.get("severity", "error"),
         ))
 
     return suites
