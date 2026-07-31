@@ -12,8 +12,8 @@ it runs, and what "arrived correctly" means. The runtime turns that into dlt col
 hints, a rate-limit pacer, a record transformer and a REST source.
 `.claude/skills/add-source/reference/pylon.yml` is a complete worked example.
 
-Every spec in `sources/` is connected and schedules DAGs. Swoogo ships that way;
-a fork that is not ours should delete it.
+Every spec in `sources/` is connected and schedules DAGs. Swoogo and Customer.io
+ship that way; a fork that is not ours should delete them.
 
 ## Four fetch strategies
 

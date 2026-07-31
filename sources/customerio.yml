@@ -1,0 +1,281 @@
+# Customer.io — the "Metabase Active Customers" workspace.
+#
+# Three things about this API shape the whole file:
+#
+#   1. Every timestamp is a Unix INTEGER, not an RFC3339 string. The runtime's
+#      `_parse_ts` only parses strings and passes ints through untouched, so
+#      what actually types these columns is the dlt column hint — verified by
+#      loading one: an epoch int against a hinted column lands as a real
+#      timestamp. That inverts the usual advice about hinting sparingly; here a
+#      date column that is not hinted lands as a bare BIGINT.
+#
+#   2. The response envelope key DIFFERS per endpoint — `campaigns`, `topics`,
+#      `types`, and /v1/transactional confusingly uses `messages`. The runtime
+#      has only ONE `data_selector` for the whole source, so this spec declares
+#      none and lets dlt detect the list per response. Checked against a live
+#      payload from all fourteen endpoints: it resolves every one except
+#      /v1/collections, which returns `{"collections": null}` — no list to find,
+#      so dlt would land the envelope itself as a single junk row. That endpoint
+#      is therefore NOT a resource here.
+#
+#   3. /v1/messages is the only endpoint with a time filter, it filters on
+#      `created`, and it caps at 6 months. See the note on that resource.
+#
+# Only the App API key is used. CUSTOMERIO_TRACKING_KEY_ACTIVE_CUSTOMER belongs
+# to the Track API, which is write-only — it pushes events INTO Customer.io and
+# can read nothing back, so no connector can use it.
+
+name: customerio
+display_name: Customer.io
+docs_url: https://docs.customer.io/integrations/api/app/
+
+api:
+  # US region. The EU host (api-eu.customer.io) answers this account's key with
+  # `301 {"detail": "wrong datacenter"}`, which is how the region was confirmed
+  # rather than assumed.
+  base_url: https://api.customer.io
+  auth:
+    type: bearer
+    # A workspace-scoped App API Key. Note that GET /v1/workspaces returns all
+    # seven Metabase workspaces whatever the key's scope — that endpoint reports
+    # the ACCOUNT, so it cannot be used to prove which workspace you are reading.
+    # What proves it is the content: campaigns like "Let Starter customers know
+    # that they can try Pro for free" and the "Active Customers" segment.
+    token_env: CUSTOMERIO_API_KEY_ACTIVE_CUSTOMER
+
+# Customer.io documents 10 requests/second for the App API — 600/minute — and
+# the budget is per account, not per workspace or per key. Metabase runs seven
+# workspaces on that one account, so this takes half and leaves the rest for
+# everything else; a full refresh of messages is ~105 requests, which at 300/min
+# is about twenty seconds. One family, because one budget is what the API grants.
+rate_limits:
+  customerio: 300
+
+orchestration:
+  # Every six hours at :41 — clear of :00, and of the :17 and :23 the reference
+  # specs use. The schedule is per SOURCE, and the only expensive resource is
+  # messages: a run re-fetches its whole 6-month window (~104k rows today).
+  # Hourly would merge ~2.5M rows/day to catch a few hundred real changes, and
+  # sends here are bursty enough that it would buy very little — 58k in March
+  # against 300 in June.
+  schedule: "41 */6 * * *"
+  # The floor the reconcile DAG passes as --start. It does not widen what the
+  # API will return: /v1/messages serves at most 6 months whatever you ask for,
+  # and every resource here is full_refresh, so no run is windowed anyway.
+  backfill_start: "2026-02-01"
+  reconcile: "0 5 * * 6"        # Saturday 05:00 UTC — the only run that tombstones
+  pool: customerio_pipeline     # size 1: concurrent runs would race the cursor
+  timeouts_minutes:
+    ingest: 50                  # a full messages refresh is ~20 min of requests
+    backfill: 120
+    reconcile: 120
+
+# Customer.io's cursor envelope, shared by every endpoint below.
+#
+# Two behaviours worth knowing, both verified against the live API rather than
+# the docs. It returns a `next` token even on the LAST page that carries rows —
+# sender_identities returns all 11 and still hands back a cursor — and it
+# terminates with an EMPTY page instead. And the unpaginated endpoints omit
+# `next` entirely. dlt's cursor paginator handles both: a missing or empty
+# cursor stops it, and so does an empty page. The cost is one extra request per
+# paginated resource per run, which is the price of not hand-rolling this.
+#
+# NO `data_selector` — see note 2 at the top of this file.
+pagination:
+  kind: cursor
+  cursor_path: next
+  cursor_param: start
+
+resources:
+  # ── deliveries ─────────────────────────────────────────────────────────────
+  # The point of ingesting an email platform: one row per message sent, with the
+  # engagement timestamps hanging off it.
+  #
+  # NO `incremental` and NO `soft_delete`, both deliberately:
+  #
+  #   /v1/messages filters on `created` and caps the range at 6 months, and
+  #   there is no "updated" filter anywhere in the API. But `created` never
+  #   moves when someone opens an email three days later — so an incremental
+  #   cursor on it would freeze every metric at whatever it was moments after
+  #   send. Re-fetching the whole rolling window each run is what keeps
+  #   opens and clicks correct; the 6-month window IS the late-engagement
+  #   lookback. Merging on `id` makes the repeated overlap idempotent.
+  #
+  #   Absence therefore carries no information: a run sees 6 months and the API
+  #   will not serve older rows at all. `always` would tombstone the entire
+  #   back catalogue on the first run, and even `full_history` is wrong here
+  #   because no run can ever cover all of history. Rows already landed simply
+  #   persist, so history accumulates FORWARD from the first run — what the
+  #   connector cannot do is reach backwards past the API's window.
+  - name: messages
+    primary_key: id
+    write_disposition: merge
+    endpoint:
+      path: /v1/messages
+      page_size: 1000           # documented maximum; ~105 pages at today's volume
+      family: customerio
+    timestamp_columns: [created]
+    # Everything below `created` is a PROMOTED column, not a key in the raw
+    # record, so `timestamp_columns` would never match it — the hint is what
+    # turns each promoted epoch int into a timestamp, so they are listed here
+    # rather than left to the default.
+    hint_columns:
+      [created, sent_at, delivered_at, opened_at, human_opened_at, prefetch_opened_at,
+       clicked_at, human_clicked_at, machine_clicked_at, bounced_at, dropped_at,
+       spammed_at, unsubscribed_at, converted_at, failed_at, undeliverable_at,
+       processed_at, drafted_at]
+    # `metrics` is a slug-keyed map, not a fixed record: alongside `sent` and
+    # `opened` it carries one key PER TRACKED LINK — `link:4838`,
+    # `bot_link:4838`, `human_link:4838` — so its key space grows with every
+    # link in every email. Promoting a fixed allowlist and leaving the map
+    # itself JSON-stringified is what stops a new link minting a warehouse
+    # column on the next send. `processed` and `machine_clicked` are in the
+    # live payload but absent from Customer.io's published schema.
+    #
+    # `customer_id` is null on most deliveries; the identity that is actually
+    # populated lives in `customer_identifiers`.
+    promote:
+      customer_identifiers.cio_id: cio_id
+      customer_identifiers.email: email
+      metrics.sent: sent_at
+      metrics.delivered: delivered_at
+      metrics.opened: opened_at
+      metrics.human_opened: human_opened_at
+      metrics.prefetch_opened: prefetch_opened_at
+      metrics.clicked: clicked_at
+      metrics.human_clicked: human_clicked_at
+      metrics.machine_clicked: machine_clicked_at
+      metrics.bounced: bounced_at
+      metrics.dropped: dropped_at
+      metrics.spammed: spammed_at
+      metrics.unsubscribed: unsubscribed_at
+      metrics.converted: converted_at
+      metrics.failed: failed_at
+      metrics.undeliverable: undeliverable_at
+      metrics.processed: processed_at
+      metrics.drafted: drafted_at
+
+  # ── workspace configuration ────────────────────────────────────────────────
+  # All small and fully re-fetched every run, so absence really does mean
+  # deleted and `soft_delete: always` is honest. Merge rather than replace,
+  # because replace would drop the very rows the tombstone pass needs to find.
+  # Only the Saturday reconcile passes --mark-deleted, so that is the one run
+  # that actually flips the flag.
+
+  - name: campaigns
+    primary_key: id
+    write_disposition: merge
+    soft_delete: always
+    endpoint: {path: /v1/campaigns, family: customerio}
+    # `first_started`, `scheduled_start` and `scheduled_stop` are epoch ints too,
+    # but carry 0 for "never" rather than null. Hinting them would render that
+    # sentinel as 1970-01-01, and a real timestamp column that silently means
+    # "not scheduled" invites `WHERE scheduled_start < now()` to match every
+    # unscheduled campaign. They stay integers, where the 0 is visible.
+    timestamp_columns: [created, updated]
+
+  - name: newsletters
+    primary_key: id
+    write_disposition: merge
+    soft_delete: always
+    endpoint: {path: /v1/newsletters, page_size: 100, family: customerio}
+    # sent_at is null until a newsletter goes out — null, not 0, so unlike the
+    # campaign fields above it is safe to type as a timestamp.
+    timestamp_columns: [created, updated, sent_at]
+
+  - name: segments
+    primary_key: id
+    write_disposition: merge
+    soft_delete: always
+    endpoint: {path: /v1/segments, family: customerio}
+    timestamp_columns: [created_at, updated_at]
+
+  - name: transactional
+    primary_key: id
+    write_disposition: merge
+    soft_delete: always
+    # The envelope key here is `messages`, same as /v1/messages — one more
+    # reason this source cannot share a single data_selector.
+    endpoint: {path: /v1/transactional, family: customerio}
+    timestamp_columns: [created_at, updated_at]
+
+  - name: sender_identities
+    primary_key: id
+    write_disposition: merge
+    soft_delete: always
+    endpoint: {path: /v1/sender_identities, page_size: 100, family: customerio}
+
+  # ── empty today, connected anyway ──────────────────────────────────────────
+  # These five return zero rows in this workspace right now, so dlt will not
+  # create their tables until something appears. They cost one request each and
+  # land on their own the day the workspace starts using them, which is cheaper
+  # than noticing later that the connector never covered them.
+
+  - name: broadcasts
+    primary_key: id
+    write_disposition: merge
+    soft_delete: always
+    endpoint: {path: /v1/broadcasts, family: customerio}
+    timestamp_columns: [created, updated]
+
+  - name: subscription_topics
+    primary_key: id
+    write_disposition: merge
+    soft_delete: always
+    endpoint: {path: /v1/subscription_topics, family: customerio}
+
+  - name: object_types
+    primary_key: id
+    write_disposition: merge
+    soft_delete: always
+    endpoint: {path: /v1/object_types, family: customerio}
+
+  # No `id` on a snippet — it is keyed by name, which is also what a template
+  # references. Declared rather than invented: merging on a key the API does not
+  # return appends a duplicate row on every run.
+  - name: snippets
+    primary_key: name
+    write_disposition: merge
+    soft_delete: always
+    endpoint: {path: /v1/snippets, family: customerio}
+    timestamp_columns: [updated_at]
+
+  # `cio_id` rather than `customer_id`: the latter is the caller-supplied
+  # identifier and is null for people who were never given one, matching the
+  # deliveries above. The per-channel `optouts` array stays JSON-stringified.
+  - name: optouts
+    primary_key: cio_id
+    write_disposition: merge
+    soft_delete: always
+    endpoint: {path: /v1/optouts, page_size: 1000, family: customerio}
+
+quality:
+  # messages and campaigns are the two whose absence means the connector is
+  # broken rather than the workspace being quiet. Everything else is a fact
+  # about how this workspace is configured — no subscription topics is a real
+  # answer, and dlt only creates a table once a resource yields a row.
+  required: [messages, campaigns]
+  freshness:
+    table: messages
+    column: created
+    hours: 24
+    # Advisory, and it has to be. Sends here are extremely bursty — 58,020
+    # deliveries in March against 300 in June — so a fortnight with no send is
+    # normal operation, and gating on it would redden a DAG that is working.
+    # Whether a run happened is a question about runs, and ops.pipeline_runs
+    # answers it.
+    severity: warn
+  max_deleted_fraction: 0.5
+  # All three verified across all 104,551 deliveries in the live window: zero
+  # orphans, so these gate rather than warn. Nulls are excluded by the check
+  # itself, which matters because each delivery has exactly one of the three —
+  # 102,590 newsletter, 1,897 campaign, 64 transactional.
+  references:
+    - {child: messages.campaign_id, parent: campaigns.id}
+    - {child: messages.newsletter_id, parent: newsletters.id}
+    - {child: messages.transactional_message_id, parent: transactional.id}
+  not_null:
+    messages: [created, type, recipient]
+    campaigns: [name, created]
+    newsletters: [name, created]
+    segments: [name, created_at]
