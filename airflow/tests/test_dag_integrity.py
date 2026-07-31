@@ -45,7 +45,15 @@ def _bag(sources_dir, monkeypatch):
 
 @pytest.fixture
 def empty_bag(monkeypatch, tmp_path):
-    """The shipped state: no specs, so no ingest DAGs."""
+    """No specs, so no ingest DAGs.
+
+    This is a property of the GENERATOR, not of the checkout: tmp_path is empty
+    whatever `sources/` contains. It used to be described as "the shipped state",
+    which made it read as a guarantee about the repo — and CLAUDE.md repeated
+    that reading. It never was one: the assertion passed identically with zero
+    specs committed or fifty. What the repo actually ships is asserted in
+    TestWhatThisCheckoutShips, against the real directory.
+    """
     return _bag(tmp_path, monkeypatch)
 
 
@@ -60,8 +68,37 @@ def connected_bag(monkeypatch, tmp_path):
     return _bag(tmp_path, monkeypatch)
 
 
+class TestWhatThisCheckoutShips:
+    """What `sources/` actually holds, and what that schedules.
+
+    Every spec committed here becomes three DAGs on anyone's stack the moment
+    they `make up`, and `AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION` is false, so
+    the ingest DAG is live immediately. That is a deliberate choice per source,
+    not a detail — so it is asserted against the real directory rather than a
+    temp one, and adding or removing a spec has to come here and say so.
+    """
+
+    def test_the_connected_sources_are_the_ones_we_expect(self):
+        specs = sorted(p.stem for p in (REPO / "sources").glob("*.yml"))
+        assert specs == ["swoogo"], (
+            f"sources/ holds {specs}. Every spec here ships connected: it schedules "
+            f"an unpaused hourly DAG and needs its token_env set, on every clone of "
+            f"this repo. If that is intended, update this list and the description "
+            f"in CLAUDE.md and README.md; if not, move the spec to "
+            f".claude/skills/add-source/reference/ where pylon.yml lives."
+        )
+
+    def test_every_shipped_spec_names_a_credential_and_parses(self):
+        """A committed spec that cannot load takes the whole DAG folder down."""
+        from ingest_runtime.spec import load
+
+        for path in sorted((REPO / "sources").glob("*.yml")):
+            spec = load(path.stem)
+            assert spec.token_env, f"{path.name} names no token_env"
+
+
 class TestEmptyByDefault:
-    def test_a_fresh_checkout_schedules_no_ingestion(self, empty_bag):
+    def test_no_specs_means_no_ingestion_dags(self, empty_bag):
         assert set(empty_bag.dag_ids) == {"stack_smoke"}
 
     def test_the_smoke_dag_is_never_scheduled(self, empty_bag):

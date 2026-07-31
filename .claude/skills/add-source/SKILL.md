@@ -38,9 +38,12 @@ limit.** A guessed budget gets discovered by being 429'd in production, usually
 mid-backfill. If the docs are silent, say so and ask — that is the one limit
 question worth a user's time.
 
-Check the pagination against the runtime's vocabulary — `cursor`, `offset`,
-`page_number`, `json_link`, `header_link`, `single_page`. Something outside that
-list means an extension, and it is much cheaper to know now than in phase 3.
+Check the pagination against what the runtime can express. `cursor` and
+`single_page` are shorthands; every other style — page number, offset, link header
+— is written as a raw dlt paginator config dict under `pagination.kind`, which is
+passed through untouched. See "The vocabulary the loader accepts" below. Only a
+scheme dlt itself cannot page needs an extension, and it is much cheaper to know
+that now than in phase 3.
 
 ## Phase 2 — Ask what research cannot answer
 
@@ -69,8 +72,9 @@ Use `AskUserQuestion`. These are decisions, not facts:
 
 ## Phase 3 — Generate
 
-Write `sources/<name>.yml`. `sources/` ships **empty** — a fresh checkout ingests
-nothing, deliberately.
+Write `sources/<name>.yml`. Everything in that directory is **connected**: it
+generates an unpaused hourly DAG and demands its credential on every clone of this
+repo. That is the bar — put a spec there only when it is genuinely being run.
 
 Read `reference/pylon.yml` in this skill's directory first. It is a complete
 worked example, kept here rather than in `sources/` so it documents the contract
@@ -91,12 +95,57 @@ backfill and reconcile DAGs for every spec in `sources/`, using the schedule,
 timeouts and pool the spec declares. Adding the file is the whole step.
 
 Also generate:
-- the credential: `<NAME>_API_KEY` in `.env.example` and in the secrets push list
+- the credential: add the variable the spec's `token_env` names to `.env`. There is
+  no list to update — `scripts/secrets_push.sh` greps `token_env` out of
+  `sources/*.yml`, so a new spec's credential is picked up on the next
+  `make secrets-push` with no edit anywhere
 - a test modelled on `pipeline/tests/test_build_source.py` — a `requests_mock`
   whose handlers **implement the API's pagination**, not canned bodies. That test
   serves two pages precisely so the paginator is exercised rather than the first
   response happening to be the whole dataset; a single-page mock passes while a
   broken paginator silently truncates every real load.
+
+### The vocabulary the loader accepts
+
+Guessing here fails at load time at best, and silently at worst. What exists:
+
+**`api.auth.type`** — `bearer`, `api_key`, `http_basic`, `oauth2_client_credentials`.
+All but the last are static: `token_env` names the variable holding the value that
+goes on every request. `oauth2_client_credentials` is for a token that expires
+mid-run, and takes two more keys:
+
+```yaml
+auth:
+  type: oauth2_client_credentials
+  token_env: SWOOGO_ENCODED_CREDENTIALS
+  token_url: https://api.swoogo.com/api/v1/oauth2/token
+  credentials_in: basic_header      # or `body` (the default)
+```
+
+`body` sends `client_id`/`client_secret` as form fields. `basic_header` sends
+`token_env` verbatim as `Authorization: Basic …`, for providers that show a
+pre-encoded `base64(urlencode(id):urlencode(secret))` string — take theirs rather
+than assembling it, because a reserved character in the secret silently produces a
+credential that never authenticates.
+
+**`endpoint.params`** — arbitrary query parameters, sent on every request.
+**`endpoint.page_size_param`** — the spelling of page size, default `limit`.
+
+These two are load-bearing far more often than they look. An API that returns a
+sparse default projection gives you `id, name` and no `updated_at` unless you ask
+for the columns by name — so the cursor column does not exist, the incremental
+comparison has nothing to compare, and the failure reads as "the source never
+changes" rather than as an error. Swoogo does exactly this; check a real response
+before assuming yours does not.
+
+**`pagination.kind`** — the shorthands are `cursor` and `single_page`; anything else
+must be a raw dlt paginator config dict, which is passed through untouched:
+
+```yaml
+pagination:
+  kind: {type: page_number, base_page: 1, page_param: page, total_path: _meta.pageCount}
+  data_selector: items
+```
 
 ### When the spec is not enough
 
@@ -108,6 +157,34 @@ live in a module named by `extensions:` in the spec.
 Reach for it only after trying the declarative form — an extension is real code
 with real maintenance. But do not contort the spec to avoid one: a connector that
 quietly loses rows is worse than a connector with a Python file.
+
+**The contract.** The module lives at
+`pipeline/src/ingest_runtime/sources/<name>.py`. For each resource whose strategy
+is not `full_refresh`, `build_source` looks for `build_<resource>(spec, resource,
+paced=None)` and falls back to `build_resource(spec, resource, paced=None)`, and
+raises if it finds neither — a connector that quietly skips an endpoint looks
+exactly like one whose source has no data.
+
+Three things the signature does not tell you:
+
+- **Return a dlt *source*, not a bare resource.** The CLI's samplers and the run
+  summary both walk `.resources`. A `@dlt.resource` builds fine, runs fine under
+  `pipeline.run()`, and dies on the first `--sample`.
+- **`paced` is the run's `EndpointPacer` and you must use it.** Pass it to
+  `paced_session(spec, paced)` and make every request through that session.
+  Ignoring it means the spec publishes a rate limit the connector never obeys,
+  and for a source whose resources are all delegated that is the entire budget.
+- **Give every request an explicit `timeout=`.** `requests` waits forever by
+  default, and a fan-out holds the source's pool of one while it does, so one hung
+  call wedges every later run behind it.
+
+**`--start`/`--end` do not reach an extension.** `build_source` takes no window, so
+a delegated resource bounds itself by its own persisted cursor and `make backfill`
+fetches what an ordinary incremental run fetches. The CLI warns when you ask, and
+refuses `--mark-deleted` for a `full_history` resource on a delegated strategy —
+tombstoning on flags the fetch ignored would delete every row the cursor happened
+not to re-fetch. If a source genuinely needs a bounded historical load, that is a
+runtime change, not a spec one.
 
 ## Phase 4 — Prove it loads
 

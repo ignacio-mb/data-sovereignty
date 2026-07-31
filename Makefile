@@ -5,7 +5,7 @@ COMPOSE := docker compose
 # Run one-off commands in the Airflow image: it has ingest and dq on PATH.
 RUN := $(COMPOSE) --profile cli run --rm airflow-cli
 
-.PHONY: help env require-env require-local up down nuke bootstrap sources ingest backfill quality \
+.PHONY: help env require-env require-tools require-local up down nuke bootstrap sources ingest backfill quality \
         docs status logs ch ch-q test test-dags build smoke secrets-push secrets-pull \
         remote tunnels deploy-status hold unhold disk
 
@@ -20,7 +20,8 @@ env: ## Create .env from .env.example and generate Airflow secrets
 	 else echo ".env already exists, leaving it alone"; fi
 	@bash scripts/gen_secrets.sh .env
 	@echo "Now fill in MB_PREMIUM_EMBEDDING_TOKEN and MB_ADMIN_PASSWORD."
-	@echo "Then connect a source: nothing is ingested until you do."
+	@echo "sources/ holds every connected source. swoogo ships connected — delete"
+	@echo "sources/swoogo.yml unless it is yours, or its DAG fails hourly."
 
 # Every credential in docker-compose.yml interpolates from .env, and the
 # containers read it wholesale so a source's token needs no compose edit. Without
@@ -34,10 +35,31 @@ require-env:
 require-local:
 	@test -n "$(DS_SKIP_LOCAL_CHECK)" || bash scripts/assert_local_stack.sh
 
+# Checked before anything starts. `make up` used to bring up four containers and
+# only then run bootstrap_metabase.sh, which exits on a missing jq or mb — so a
+# missing Node package left a booted stack with no admin account, no API key and
+# Airflow never started. Two seconds here beats five minutes and a broken stack.
+require-tools:
+	@missing=""; \
+	for t in docker jq openssl mb; do \
+	  command -v $$t >/dev/null 2>&1 || missing="$$missing $$t"; \
+	done; \
+	if [ -n "$$missing" ]; then \
+	  echo "missing required tool(s):$$missing"; \
+	  echo; \
+	  echo "  docker   https://docs.docker.com/get-docker/"; \
+	  echo "  jq       brew install jq"; \
+	  echo "  openssl  brew install openssl"; \
+	  echo "  mb       npm install -g @metabase/cli   (needs Node)"; \
+	  echo; \
+	  echo "See the Prerequisites table in README.md."; \
+	  exit 2; \
+	fi
+
 build: require-env ## Build the Airflow image (ingest + dq)
 	$(COMPOSE) build
 
-up: require-env require-local ## Bring the stack up in stages and bootstrap Metabase
+up: require-env require-tools require-local ## Bring the stack up in stages and bootstrap Metabase
 	$(COMPOSE) up -d --wait warehouse-db metabase-app-db airflow-db metabase
 	bash scripts/bootstrap_metabase.sh
 	$(COMPOSE) up -d --wait airflow-apiserver airflow-scheduler airflow-dag-processor airflow-triggerer datadocs
@@ -51,12 +73,12 @@ nuke: ## Stop the stack and DESTROY all volumes (warehouse + dlt state + Metabas
 	@read -p "Type 'nuke' to confirm: " c && [ "$$c" = "nuke" ]
 	$(COMPOSE) --profile cli down -v
 
-bootstrap: require-local ## (Re-)run Metabase bootstrap: setup, warehouse connection, API key
+bootstrap: require-tools require-local ## (Re-)run Metabase bootstrap: setup, warehouse connection, API key
 	bash scripts/bootstrap_metabase.sh
 
 # ─── Pipeline ────────────────────────────────────────────────────────────────
-# Every target here takes SOURCE, because this repo ships with no sources: the
-# DAGs are generated per spec in sources/, so there is no default one to mean.
+# Every target here takes SOURCE: the DAGs are generated per spec in sources/,
+# so there is no default one to mean even when only one is connected.
 # `make sources` lists what is connected.
 
 sources: ## List the connected sources

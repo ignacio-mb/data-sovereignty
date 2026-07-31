@@ -83,7 +83,7 @@ def run(source_name, start, end, resources_csv, mode, mark_deleted_flag, sample_
         destination, summary_json, verbose):
     """Ingest a source into the warehouse (database raw_<source>)."""
     from .ingest.soft_delete import mark_deleted
-    from .runtime import build_source, extensions, pacer
+    from .runtime import _DECLARATIVE_STRATEGIES, build_source, extensions, pacer
     from .warehouse import build_pipeline, ensure_database, table_counts
 
     setup_logging(verbose)
@@ -136,6 +136,19 @@ def run(source_name, start, end, resources_csv, mode, mark_deleted_flag, sample_
         if start or end:
             raise click.BadParameter("--start/--end only apply to window mode")
         end_is_current = False
+
+    if mode == "window":
+        # Say it once, up front. `make backfill` on a delegated resource is not a
+        # backfill: build_source has no window parameter, so the extension sees
+        # only its own cursor. Silence here is what makes a green DAG look like
+        # loaded history.
+        unbounded = [name for name in selected
+                     if spec.resource(name).strategy not in _DECLARATIVE_STRATEGIES]
+        if unbounded:
+            log.warning("[window] --start/--end do not reach these resources, which are "
+                        "fetched by the extension and bound themselves by their own "
+                        "cursor: %s. They will fetch what an incremental run fetches, "
+                        "not the requested range.", ", ".join(unbounded))
 
     log.info("%s: %s mode · resources: %s · destination: %s",
              spec.name, mode, ", ".join(selected), destination)
@@ -192,6 +205,22 @@ def run(source_name, start, end, resources_csv, mode, mark_deleted_flag, sample_
         )
         for name in spec.full_history_soft_delete_tables:
             if name not in selected:
+                continue
+            # `covered_full_history` is computed from the FLAGS, not from what was
+            # actually fetched — and --start/--end never reach a delegated
+            # resource. build_source takes no window, so an extension bounds
+            # itself solely by its own persisted cursor: a "backfill" of such a
+            # resource fetches the same slice an ordinary incremental run does.
+            # Trusting the flags there would tombstone every row the cursor
+            # happened not to re-fetch, and max_deleted_fraction only notices
+            # after the rows have already been marked.
+            if spec.resource(name).strategy not in _DECLARATIVE_STRATEGIES:
+                log.warning(
+                    "[soft-delete] %s skipped: strategy %r is fetched by the extension, "
+                    "which the --start/--end window does not reach, so this run cannot "
+                    "have covered full history whatever the flags say. Tombstoning it "
+                    "would delete rows that were simply not re-fetched.",
+                    name, spec.resource(name).strategy)
                 continue
             if covered_full_history:
                 eligible.append(name)

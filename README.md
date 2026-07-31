@@ -6,9 +6,13 @@ Point it at a REST API and it lands the data, validates it, and serves it throug
 Metabase. Nothing leaves your machine except the calls to the APIs you connect and
 the Metabase license check.
 
-**It arrives empty.** No source is connected, so nothing is scheduled and nothing
-is fetched until you connect one — a fresh checkout has exactly one DAG, and its
-job is to prove the plumbing works.
+**One source ships connected: Swoogo**, because this repo is also where we run
+it. Everything in `sources/` is live — each spec generates an unpaused hourly
+ingest DAG the moment the stack comes up, and fails every hour without its
+credential. **If you are not us, delete `sources/swoogo.yml`** and the stack goes
+back to scheduling nothing but the smoke DAG, which exists to prove the plumbing.
+
+Then ask Claude to connect a source you actually have.
 
 ```
 any REST API ──(dlt)──▶ ClickHouse ──▶ Metabase
@@ -30,6 +34,29 @@ scheduling, quality, the `ops` observability schema, hosting the instance — ne
 no license token, and Metabase boots and charts your data without one. A token
 only unlocks Enterprise features, none of which this stack uses. `make bootstrap`
 reports which side of that line the instance is on.
+
+## Prerequisites
+
+On the machine you drive this from:
+
+| Tool | Why | Check |
+|---|---|---|
+| Docker (with compose) | every service runs in it | `docker compose version` |
+| [uv](https://docs.astral.sh/uv/) | runs the tests and the CLIs | `uv --version` |
+| `jq` | the Metabase bootstrap parses JSON with it | `jq --version` |
+| `openssl` | generates the Airflow secrets in `make env` | `openssl version` |
+| [`mb`](https://www.npmjs.com/package/@metabase/cli) (needs Node) | the only supported way this repo talks to Metabase | `mb --version` |
+
+`make up` checks for these before it starts anything. It used to boot four
+containers first and then abort on a missing `mb`, leaving a half-configured
+stack with no admin account.
+
+Docker needs roughly **6 GB** of memory available: ClickHouse, Metabase, two
+Postgres instances and four Airflow services. Below that, Metabase and the
+Airflow triggerer are the first to be killed.
+
+Deploying to AWS needs more (`aws` CLI, the Session Manager plugin, Terraform) —
+see [docs/deploy.md](docs/deploy.md).
 
 ## Quick start
 
