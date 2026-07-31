@@ -361,6 +361,24 @@ services:
     # `run --rm airflow-cli dq ops-init` into `airflow dq ops-init`. Clearing it
     # lets the container run any binary on PATH; `airflow ...` still works.
     entrypoint: []
+    # …but clearing the entrypoint also discards the uid handling it does, and
+    # that is load-bearing. Airflow is installed into the USER site,
+    # /home/airflow/.local/lib/python3.12/site-packages, and Python derives that
+    # path from HOME. Docker sets HOME from the passwd entry of whatever uid it
+    # is given: 50000 is `airflow` (HOME=/home/airflow), but 1000 is `default`
+    # (HOME=/), and the instance runs as 1000 because render_env_from_ssm.sh
+    # sets AIRFLOW_UID to the operator's own id. With HOME=/ the interpreter
+    # looks in /.local, finds nothing, and every command dies on
+    # `ModuleNotFoundError: No module named 'airflow'` — while the long-running
+    # services, which keep the entrypoint, are perfectly fine.
+    #
+    # Pinned rather than left to the uid, so this works on a laptop where
+    # AIRFLOW_UID is 50000 and on a host where it is anything else. It only
+    # looked correct locally because the default happens to be the one uid that
+    # has the right home.
+    environment:
+      <<: *airflow-env
+      HOME: /home/airflow
     command: ["airflow", "version"]
 
   # Serves the Great Expectations data docs written by `dq docs-build`.
