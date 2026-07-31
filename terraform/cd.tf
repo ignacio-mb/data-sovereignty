@@ -7,6 +7,10 @@ locals {
 
   desired_sha_parameter = "${var.ssm_parameter_prefix}/deploy/desired_sha"
 
+  # Kept for the deploy document's description only — the trust policy matches
+  # the individual claims instead, because GitHub does not guarantee this
+  # string's shape. See the conditions in aws_iam_policy_document.cd_assume.
+  #
   # The full subject, not a prefix. `repo:owner/name:*` would match every
   # branch and every pull request in the repository, which is the usual way
   # this pattern is got wrong.
@@ -51,10 +55,36 @@ data "aws_iam_policy_document" "cd_assume" {
       values   = ["sts.amazonaws.com"]
     }
 
+    # Matched claim by claim rather than against the composite `sub`, which is
+    # not a stable string. GitHub can issue the subject with the owner and
+    # repository ids embedded inline —
+    #
+    #   repo:owner@132273646/name@1316246347:environment:production
+    #
+    # rather than the documented `repo:owner/name:environment:production`. A
+    # StringEquals on the composite form then never matches, and the only
+    # symptom is `AccessDenied ... Not authorized to perform
+    # sts:AssumeRoleWithWebIdentity` from a workflow that is configured
+    # correctly. Merge-to-deploy never once worked in this repository because of
+    # it, and the actual subject is only visible in the CloudTrail event's
+    # userIdentity.principalId.
+    #
+    # These four conditions together are strictly narrower than the subject was:
+    # they pin the repository, the environment, and the two ids the subject
+    # merely concatenated.
     condition {
       test     = "StringEquals"
-      variable = "token.actions.githubusercontent.com:sub"
-      values   = [local.oidc_subject]
+      variable = "token.actions.githubusercontent.com:repository"
+      values   = [var.github_repository]
+    }
+
+    # Scopes deploys to the environment, which is what the subject was doing.
+    # Absent from the token when a job declares no environment, so a workflow
+    # that forgets `environment:` is denied rather than quietly trusted.
+    condition {
+      test     = "StringEquals"
+      variable = "token.actions.githubusercontent.com:environment"
+      values   = [var.github_environment]
     }
 
     # The repository *name* is released for anyone to re-register once it is
