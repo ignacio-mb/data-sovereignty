@@ -1,0 +1,29 @@
+[
+  {
+    "id": "usr-01",
+    "name": "Ada Lovelace",
+    "email": "ada@example.test",
+    "role": "admin",
+    "created_at": "2025-01-05T09:00:00Z",
+    "updated_at": "2026-05-06T14:05:00Z",
+    "latest_customer_message_time": null
+  },
+  {
+    "id": "usr-02",
+    "name": "Bo Nguyen",
+    "email": "bo@example.test",
+    "role": "agent",
+    "created_at": "2025-02-11T09:00:00Z",
+    "updated_at": "2026-06-12T11:30:00Z",
+    "latest_customer_message_time": null
+  },
+  {
+    "id": "usr-03",
+    "name": "Cy Okafor",
+    "email": "cy@example.test",
+    "role": "agent",
+    "created_at": "2025-11-02T09:00:00Z",
+    "updated_at": "2026-04-01T09:00:00Z",
+    "latest_customer_message_time": null
+  }
+]

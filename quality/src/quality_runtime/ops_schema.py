@@ -69,6 +69,7 @@ STATEMENTS = [
     f"""
     CREATE TABLE IF NOT EXISTS {OPS_SCHEMA}.pipeline_runs (
         recorded_at         DateTime64(6, 'UTC') DEFAULT now64(6),
+        source              Nullable(String),
         dag_id              Nullable(String),
         dag_run_id          Nullable(String),
         task_id             Nullable(String),
@@ -85,6 +86,10 @@ STATEMENTS = [
     ) ENGINE = MergeTree
     ORDER BY recorded_at
     """,
+    # Added after the table shipped; no-ops on a fresh install. Rows written
+    # before this stay null, which is honest — the source was never recorded.
+    (f"ALTER TABLE {OPS_SCHEMA}.pipeline_runs ADD COLUMN IF NOT EXISTS "
+     f"source Nullable(String) AFTER recorded_at"),
 ]
 
 

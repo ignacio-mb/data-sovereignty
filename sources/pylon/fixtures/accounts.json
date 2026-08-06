@@ -1,0 +1,35 @@
+[
+  {
+    "id": "acc-01",
+    "name": "Northwind",
+    "domain": "northwind.test",
+    "type": "customer",
+    "owner": {"id": "usr-01", "email": "ada@example.test"},
+    "created_at": "2025-03-01T10:00:00Z",
+    "updated_at": "2026-06-30T10:00:00Z",
+    "latest_customer_message_time": "2026-07-02T16:45:00Z",
+    "custom_fields": {"tier": "gold"}
+  },
+  {
+    "id": "acc-02",
+    "name": "Cyclic Co",
+    "domain": "cyclic.test",
+    "type": "customer",
+    "owner": {"id": "usr-02", "email": "bo@example.test"},
+    "created_at": "2025-09-14T10:00:00Z",
+    "updated_at": "2026-06-12T11:30:00Z",
+    "latest_customer_message_time": "2026-06-11T08:00:00Z",
+    "custom_fields": {"tier": "silver"}
+  },
+  {
+    "id": "acc-03",
+    "name": "Delta GmbH",
+    "domain": "delta.test",
+    "type": "customer",
+    "owner": null,
+    "created_at": "2026-01-20T10:00:00Z",
+    "updated_at": "2026-07-22T10:10:00Z",
+    "latest_customer_message_time": "2026-07-21T12:00:00Z",
+    "custom_fields": {}
+  }
+]

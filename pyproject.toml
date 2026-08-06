@@ -35,7 +35,11 @@ dag-tests = [
 ]
 
 [tool.pytest.ini_options]
-testpaths = ["pipeline/tests", "quality/tests", "airflow/tests"]
+# `sources` is in here because a connector is a directory: the tests for the
+# behaviour its spec could NOT declare live beside the extension they pin, and
+# a test nothing collects is a test that rots. The generic invariants stay in
+# pipeline/tests/test_connector_contract.py.
+testpaths = ["pipeline/tests", "quality/tests", "airflow/tests", "sources"]
 # No markers and nothing deselected: every test runs offline, against mocked HTTP
 # and duckdb, so there is no subset to hold back. airflow/tests skips itself when
 # Airflow is absent — its own importorskip, not a marker.

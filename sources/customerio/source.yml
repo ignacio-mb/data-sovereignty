@@ -25,9 +25,13 @@
 # to the Track API, which is write-only — it pushes events INTO Customer.io and
 # can read nothing back, so no connector can use it.
 
+# yaml-language-server: $schema=../source.schema.json
+
 name: customerio
+status: connected
 display_name: Customer.io
 docs_url: https://docs.customer.io/integrations/api/app/
+owner: data-eng
 
 api:
   # US region. The EU host (api-eu.customer.io) answers this account's key with

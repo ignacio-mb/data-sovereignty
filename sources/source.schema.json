@@ -1,0 +1,396 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/metabase/data-sovereignty/sources/source.schema.json",
+  "title": "Source spec",
+  "description": "The whole contract for one connector: what to fetch, how to page it, what is incremental, when it runs, and what 'arrived correctly' means. Nothing about a particular API is compiled into the runtime; anything this vocabulary cannot express goes in the connector's own extension.py.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["name", "status", "api", "resources"],
+  "properties": {
+    "name": {
+      "description": "Identity. Must equal the directory name; becomes raw_<name>, the dlt pipeline name, and the <name>_ingest/_backfill/_reconcile DAG ids.",
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9_]{1,40}$"
+    },
+    "status": {
+      "description": "connected = DAGs are generated and live, and the token is demanded on every clone. reference = validated and built by the test harness but scheduled by nothing. paused = DAGs exist with no schedule. Required with no default: scheduling a connector must be a deliberate line in a reviewable diff.",
+      "enum": ["connected", "reference", "paused"]
+    },
+    "display_name": { "type": "string" },
+    "docs_url": { "type": "string", "format": "uri" },
+    "owner": {
+      "description": "Who to ask when this connector breaks. Free text; surfaced in the generated inventory.",
+      "type": "string"
+    },
+    "api": { "$ref": "#/$defs/api" },
+    "rate_limits": {
+      "description": "Requests per minute per endpoint family. The pacer spreads requests across these proactively, so 429s stay rare rather than being recovered from.",
+      "type": "object",
+      "additionalProperties": { "type": "number", "exclusiveMinimum": 0 },
+      "propertyNames": { "pattern": "^[a-z][a-z0-9_]*$" }
+    },
+    "orchestration": { "$ref": "#/$defs/orchestration" },
+    "pagination": { "$ref": "#/$defs/pagination" },
+    "resources": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/$defs/resource" }
+    },
+    "quality": { "$ref": "#/$defs/quality" },
+    "extensions": {
+      "description": "true when this connector ships an extension.py beside its spec. The loader derives the path, so there is no module name to drift. A string is the legacy spelling and is accepted with a deprecation warning.",
+      "oneOf": [{ "type": "boolean" }, { "type": "string" }]
+    }
+  },
+  "$defs": {
+    "api": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["base_url", "auth"],
+      "properties": {
+        "base_url": { "type": "string", "format": "uri" },
+        "headers": {
+          "type": "object",
+          "additionalProperties": { "type": "string" }
+        },
+        "auth": { "$ref": "#/$defs/auth" }
+      }
+    },
+    "auth": {
+      "type": "object",
+      "required": ["type", "token_env"],
+      "properties": {
+        "type": {
+          "description": "Registered auth builders. `extension` hands auth construction to the connector's own extension.py, for schemes no generic builder covers (request signing, rotating HMAC).",
+          "enum": ["bearer", "api_key", "http_basic", "oauth2_client_credentials", "extension"]
+        },
+        "token_env": {
+          "description": "The NAME of the environment variable holding the credential — never the credential. This is what lets a spec live in a public repo.",
+          "type": "string",
+          "pattern": "^[A-Z][A-Z0-9_]*$"
+        },
+        "header": { "type": "string" },
+        "username": { "type": "string" },
+        "password": { "type": "string" },
+        "token_url": { "type": "string", "format": "uri" },
+        "credentials_in": { "enum": ["body", "basic_header"] },
+        "client_id": { "type": "string" },
+        "token_request_data": {
+          "type": "object",
+          "additionalProperties": { "type": "string" }
+        }
+      },
+      "allOf": [
+        {
+          "if": { "properties": { "type": { "const": "oauth2_client_credentials" } }, "required": ["type"] },
+          "then": { "required": ["token_url"] }
+        },
+        {
+          "if": { "properties": { "type": { "const": "api_key" } }, "required": ["type"] },
+          "then": {
+            "additionalProperties": false,
+            "properties": {
+              "type": true, "token_env": true, "header": true
+            }
+          }
+        },
+        {
+          "if": { "properties": { "type": { "const": "bearer" } }, "required": ["type"] },
+          "then": {
+            "additionalProperties": false,
+            "properties": { "type": true, "token_env": true }
+          }
+        }
+      ]
+    },
+    "orchestration": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "schedule": {
+          "description": "Cron for the ingest DAG, or null for manual only. Pick a minute clear of the other connectors' — `ingest validate` warns on collisions.",
+          "type": ["string", "null"]
+        },
+        "reconcile": {
+          "description": "Cron for the full-history re-fetch that tombstones deletions. Only builds a DAG together with backfill_start.",
+          "type": ["string", "null"]
+        },
+        "pool": {
+          "description": "Airflow pool. Defaults to <name>_pipeline — one slot, so a source's runs cannot race their own incremental cursor.",
+          "type": "string"
+        },
+        "backfill_start": {
+          "description": "The floor of this source's history. Required for a reconcile DAG: the tombstone pass is only safe on a run that provably covered all of history, and this is what it compares against.",
+          "type": "string",
+          "pattern": "^\\d{4}-\\d{2}-\\d{2}([T ].*)?$"
+        },
+        "retries": { "type": "integer", "minimum": 0, "maximum": 10 },
+        "runtime": {
+          "description": "Task-size tier. Read by the DAG generator and by terraform when sizing this source's ephemeral task. light = rate-limit-bound API pulls; standard = fan-out sources and most backfills; long = multi-hour paced reads; heavy = large snapshots and anything holding rows in memory.",
+          "oneOf": [
+            { "enum": ["light", "standard", "long", "heavy"] },
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "ingest": { "enum": ["light", "standard", "long", "heavy"] },
+                "backfill": { "enum": ["light", "standard", "long", "heavy"] },
+                "reconcile": { "enum": ["light", "standard", "long", "heavy"] }
+              }
+            }
+          ]
+        },
+        "timeouts_minutes": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "ingest": { "type": "integer", "minimum": 1 },
+            "backfill": { "type": "integer", "minimum": 1 },
+            "reconcile": { "type": "integer", "minimum": 1 }
+          }
+        }
+      }
+    },
+    "pagination": {
+      "description": "Source-wide paging defaults. A resource may override any of it under endpoint.paginator / endpoint.data_selector.",
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "kind": { "$ref": "#/$defs/paginator" },
+        "cursor_path": { "type": "string" },
+        "cursor_param": { "type": "string" },
+        "data_selector": {
+          "description": "Where the records live in the response envelope. Source-wide default only — APIs whose envelope differs per endpoint set it per resource instead.",
+          "type": "string"
+        }
+      }
+    },
+    "paginator": {
+      "description": "A registered shorthand, a dlt paginator name, or a raw dlt paginator config passed through untouched.",
+      "oneOf": [
+        { "type": "string" },
+        { "type": "object" }
+      ]
+    },
+    "resource": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "primary_key"],
+      "properties": {
+        "name": { "type": "string", "pattern": "^[a-z][a-z0-9_]*$" },
+        "primary_key": {
+          "description": "The merge key. Identity checks (not null, unique) are generated from it and are never opt-in.",
+          "oneOf": [
+            { "type": "string" },
+            { "type": "array", "minItems": 1, "items": { "type": "string" } }
+          ]
+        },
+        "write_disposition": {
+          "description": "merge is the default and the safe one: a re-fetched row updates in place. append cannot dedupe, so a run killed mid-load can duplicate rows — `ingest validate` requires a justification comment for it.",
+          "enum": ["merge", "append", "replace"]
+        },
+        "soft_delete": {
+          "description": "When absence from a run is allowed to mean 'deleted upstream'. always = the resource is fully re-fetched every run. full_history = only a run that covered all of history may tombstone. Never a bare boolean.",
+          "enum": ["always", "full_history"]
+        },
+        "endpoint": { "$ref": "#/$defs/endpoint" },
+        "incremental": { "$ref": "#/$defs/incremental" },
+        "timestamp_columns": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "hint_columns": {
+          "description": "Columns dlt must type deterministically because something compares them. Defaults to every timestamp column.",
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "promote": {
+          "description": "{'nested.path': 'column'} — the only nested scalars that become real columns. Everything else is JSON-stringified, so a new upstream field cannot mint a column or a child table.",
+          "type": "object",
+          "additionalProperties": { "type": "string" }
+        },
+        "html_text": {
+          "description": "{'html_field': 'text_column'} — strip markup into a companion column.",
+          "type": "object",
+          "additionalProperties": { "type": "string" }
+        }
+      }
+    },
+    "endpoint": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "path": { "type": "string" },
+        "method": { "enum": ["GET", "POST"] },
+        "paginator": { "$ref": "#/$defs/paginator" },
+        "data_selector": {
+          "description": "Per-resource override of the envelope path, for APIs that wrap each endpoint differently.",
+          "type": "string"
+        },
+        "cursor_path": {
+          "description": "Per-resource override of where the next-page cursor lives in the response.",
+          "type": "string"
+        },
+        "cursor_param": {
+          "description": "Per-resource override of the query parameter carrying the next-page cursor.",
+          "type": "string"
+        },
+        "params": {
+          "description": "Query parameters sent on every request to this endpoint.",
+          "type": "object"
+        },
+        "json": {
+          "description": "Body sent with a POST endpoint.",
+          "type": "object"
+        },
+        "page_size": { "type": "integer", "minimum": 1 },
+        "page_size_param": {
+          "description": "Spelling of the page-size parameter. `limit` is only the most common one, not a universal one.",
+          "type": "string"
+        },
+        "family": {
+          "description": "Rate-limit family. Defaults to the resource name, so a source that does not group its endpoints gets one budget each.",
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9_]*$"
+        }
+      }
+    },
+    "incremental": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "strategy": {
+          "description": "The fetch algorithm. full_refresh and cursor are built declaratively and need no Python; the other three name an algorithm the connector's extension.py must supply.",
+          "enum": ["full_refresh", "cursor", "search_window", "parent_watermark", "parent_fanout"]
+        },
+        "cursor_field": {
+          "description": "The record field the cursor tracks (dlt's cursor_path).",
+          "type": "string"
+        },
+        "cursor_param": {
+          "description": "cursor strategy: the query parameter carrying the lower bound.",
+          "type": "string"
+        },
+        "end_param": {
+          "description": "cursor strategy: the query parameter carrying the upper bound, for APIs that want a closed range.",
+          "type": "string"
+        },
+        "initial_value": {
+          "description": "cursor strategy: where the first run starts. Absent means the API's own beginning.",
+          "type": "string"
+        },
+        "lookback_seconds": {
+          "description": "Re-read this much already-loaded history on every run. Free under merge, and it covers records written while the previous run was mid-fetch.",
+          "type": "integer",
+          "minimum": 0
+        },
+        "endpoint": { "$ref": "#/$defs/endpoint" },
+        "parent": {
+          "description": "parent_* strategies: the resource whose rows drive this one's worklist.",
+          "type": "string"
+        },
+        "window": {
+          "description": "search_window: the backfill endpoint and how wide a slice it will answer.",
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "endpoint": { "$ref": "#/$defs/endpoint" },
+            "filters_on": { "type": "string" },
+            "max_window_days": { "type": "integer", "minimum": 1 }
+          }
+        },
+        "search": {
+          "description": "search_window: the incremental endpoint filtering on update time.",
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "endpoint": { "$ref": "#/$defs/endpoint" },
+            "cursor_in": { "type": "string" }
+          }
+        },
+        "skip_statuses": {
+          "description": "parent_watermark: HTTP statuses meaning 'this parent is gone' — skip it rather than fail the run over a record that no longer exists.",
+          "type": "array",
+          "items": { "type": "integer", "minimum": 100, "maximum": 599 }
+        },
+        "budget_minutes": {
+          "description": "parent_watermark: wall-clock budget, so a long worklist stops cleanly and the next run resumes rather than being killed mid-load.",
+          "type": "integer",
+          "minimum": 1
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": { "strategy": { "const": "cursor" } },
+            "required": ["strategy"]
+          },
+          "then": { "required": ["cursor_field", "cursor_param"] }
+        },
+        {
+          "if": {
+            "properties": { "strategy": { "const": "parent_fanout" } },
+            "required": ["strategy"]
+          },
+          "then": { "required": ["endpoint"] }
+        }
+      ]
+    },
+    "quality": {
+      "description": "What 'arrived correctly' means. Identity checks (primary key not null, unique, at least one row) are generated for every resource and are not declared here — everything in this block is in addition to them.",
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "required": {
+          "description": "Tables whose absence is a hard failure rather than a quiet skip.",
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "freshness": {
+          "description": "How recently the SOURCE last changed a record. Advisory by default: on a quiet weekend it fails while the pipeline is healthy. One entry, or several for a source with more than one clock.",
+          "oneOf": [
+            { "$ref": "#/$defs/freshness" },
+            { "type": "array", "minItems": 1, "items": { "$ref": "#/$defs/freshness" } }
+          ]
+        },
+        "max_deleted_fraction": {
+          "description": "A run tombstoning more than this share of a table means the soft-delete predicate misfired.",
+          "type": "number",
+          "exclusiveMinimum": 0,
+          "maximum": 1
+        },
+        "references": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["child", "parent"],
+            "properties": {
+              "child": { "type": "string", "pattern": "^[a-z][a-z0-9_]*\\.[a-zA-Z_][a-zA-Z0-9_]*$" },
+              "parent": { "type": "string", "pattern": "^[a-z][a-z0-9_]*\\.[a-zA-Z_][a-zA-Z0-9_]*$" },
+              "severity": { "enum": ["error", "warn"] }
+            }
+          }
+        },
+        "not_null": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "array",
+            "items": { "type": "string" }
+          }
+        }
+      }
+    },
+    "freshness": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["table", "column"],
+      "properties": {
+        "table": { "type": "string" },
+        "column": { "type": "string" },
+        "hours": { "type": "number", "exclusiveMinimum": 0 },
+        "severity": { "enum": ["error", "warn"] }
+      }
+    }
+  }
+}

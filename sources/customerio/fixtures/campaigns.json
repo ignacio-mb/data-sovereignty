@@ -1,0 +1,32 @@
+[
+  {
+    "id": 17,
+    "deduplicate_id": "17",
+    "name": "Let Starter customers know that they can try Pro for free",
+    "type": "triggered",
+    "state": "running",
+    "created": 1780000000,
+    "updated": 1785000000,
+    "first_started": 1780003600,
+    "scheduled_start": 0,
+    "scheduled_stop": 0,
+    "active": true,
+    "actions": [{"id": 3, "type": "email", "name": "Send the invite"}],
+    "tags": ["lifecycle"]
+  },
+  {
+    "id": 31,
+    "deduplicate_id": "31",
+    "name": "Win back dormant workspaces",
+    "type": "triggered",
+    "state": "draft",
+    "created": 1782000000,
+    "updated": 1784000000,
+    "first_started": 0,
+    "scheduled_start": 0,
+    "scheduled_stop": 0,
+    "active": false,
+    "actions": [],
+    "tags": []
+  }
+]

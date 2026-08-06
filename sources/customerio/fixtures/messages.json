@@ -1,0 +1,60 @@
+[
+  {
+    "id": "m1",
+    "deduplicate_id": "m1:1785485066",
+    "customer_id": null,
+    "customer_identifiers": {"cio_id": "cio1", "email": "p1@example.test"},
+    "recipient": "p1@example.test",
+    "subject": "Try Pro for free",
+    "type": "email",
+    "created": 1785485066,
+    "campaign_id": 17,
+    "newsletter_id": null,
+    "transactional_message_id": null,
+    "metrics": {
+      "sent": 1785485066,
+      "delivered": 1785485070,
+      "opened": 1785485074,
+      "human_opened": 1785485074,
+      "link:4838": 1785485081,
+      "bot_link:4838": 1785485079
+    }
+  },
+  {
+    "id": "m2",
+    "deduplicate_id": "m2:1785485066",
+    "customer_id": null,
+    "customer_identifiers": {"cio_id": "cio2", "email": "p2@example.test"},
+    "recipient": "p2@example.test",
+    "subject": "Try Pro for free",
+    "type": "email",
+    "created": 1785485066,
+    "campaign_id": 17,
+    "newsletter_id": null,
+    "transactional_message_id": null,
+    "metrics": {
+      "sent": 1785485066,
+      "delivered": 1785485071,
+      "bounced": 1785485090
+    }
+  },
+  {
+    "id": "m3",
+    "deduplicate_id": "m3:1785485066",
+    "customer_id": null,
+    "customer_identifiers": {"cio_id": "cio3", "email": "p3@example.test"},
+    "recipient": "p3@example.test",
+    "subject": "August product news",
+    "type": "email",
+    "created": 1785488666,
+    "campaign_id": null,
+    "newsletter_id": 4,
+    "transactional_message_id": null,
+    "metrics": {
+      "sent": 1785488666,
+      "delivered": 1785488669,
+      "opened": 1785488900,
+      "link:5120": 1785488950
+    }
+  }
+]

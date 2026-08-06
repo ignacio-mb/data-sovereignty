@@ -67,28 +67,44 @@ make up       # start services, bootstrap Metabase, provision an API key
 make smoke    # prove the plumbing: CLIs, warehouse, Metabase, dlt state
 ```
 
-`make up` schedules whatever is in `sources/` — on a fresh clone that is Swoogo
-and Customer.io, ours, which will fail on every tick without their credentials.
-Delete them unless you are us. Then ask Claude to *"connect the Zendesk API"* —
-or whichever source you have — and then *"what's the state of my pipeline?"*
+`make up` schedules the connectors listed in [`sources/CONNECTED`](sources/CONNECTED)
+— on a fresh clone those are ours, and they fail on every tick without our
+credentials. Empty that file and set each spec's `status` to `reference` unless
+you are us. Then ask Claude to *"connect the Zendesk API"* — or whichever source
+you have — and then *"what's the state of my pipeline?"*
 
 ## Connecting a source
 
-A source is a file. `sources/<name>.yml` declares the API, how it pages, what is
-incremental, when it runs, and what "correct" means for its tables. Everything
-else follows from it: the DAGs are generated per spec, the expectations are
-generated per spec, and the database, dlt pipeline and Airflow pool are named
-after it. Most connectors need no Python at all.
+A connector is a directory. [`sources/<name>/source.yml`](docs/sources.md)
+declares the API, how it pages, what is incremental, when it runs, and what
+"correct" means for its tables; everything else follows from it — the DAGs, the
+expectations, the database, the dlt pipeline and the Airflow pool are all
+generated or named from that one file. Beside it live the things a contract
+cannot hold: `extension.py` when the API needs behaviour no vocabulary
+expresses, `fixtures/` that prove the connector offline, `README.md` for what the
+research turned up.
+
+**Most connectors need no Python at all.** Two fetch strategies are built from
+configuration alone: `full_refresh`, and `cursor` — the high-water mark pushed
+into the API's own query parameter, which is the shape most REST APIs have.
 
 Ask Claude to *"connect the Zendesk API"* and the `add-source` skill will research
 the API's own documentation for endpoints, pagination and rate limits, ask you the
 things research can't answer, generate the connector, and prove it loads. Then add
-the token to `.env` under the name the spec's `token_env` gives, and re-run
-`make up` so the source's Airflow pool is created.
+the token to `.env` under the name the spec's `token_env` gives, set
+`status: connected`, add the name to `sources/CONNECTED`, and re-run `make up` so
+the source's Airflow pool is created.
 
-`.claude/skills/add-source/reference/pylon.yml` is a complete worked example, and
-its comments explain every field. It lives in the skill rather than in `sources/`
-on purpose: a reference an agent reads, not a connector the stack runs.
+```bash
+ingest scaffold zendesk        # the directory skeleton, as status: reference
+ingest validate --source zendesk
+ingest run --source zendesk --destination duckdb --sample 3
+```
+
+[`sources/pylon/`](sources/pylon/) is the complete worked example — a spec whose
+comments explain every field, plus the extension for the two behaviours Pylon has
+that no configuration could describe. It ships as `status: reference`, so it is
+validated and built by the test suite and scheduled by nothing.
 
 Three things are worth knowing before you connect one:
 
@@ -231,7 +247,7 @@ Three things that are only obvious once a deploy has failed:
 
 | Path | Contents |
 |---|---|
-| `sources/` | One YAML per connector — the source contract. **Everything here is live.** |
+| `sources/<name>/` | One directory per connector: the contract, its extension, fixtures and research. `status:` decides what schedules; [docs/sources.md](docs/sources.md) lists them. |
 | `pipeline/` | The ingestion runtime and `ingest` CLI |
 | `quality/` | The `dq` CLI and the suite builder that reads each spec |
 | `airflow/dags/` | `stack_smoke`, and the generator that turns specs into DAGs |
@@ -244,7 +260,7 @@ the rules that keep the stack reproducible — read it before changing anything.
 
 ## What's built, and what isn't
 
-**The spec-driven path is complete.** One `sources/<name>.yml` produces the fetch,
+**The spec-driven path is complete.** One `sources/<name>/source.yml` produces the fetch,
 the DAGs, the expectations, the warehouse database and the cursor. A source using
 only paged full-refresh endpoints needs no Python; the test suite drives such a
 spec end to end into duckdb, so "no Python" is verified rather than claimed.

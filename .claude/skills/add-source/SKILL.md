@@ -6,9 +6,23 @@ allowed-tools: Bash, Read, Write, Edit, Glob, Grep, WebFetch, WebSearch, AskUser
 
 # Connecting a source
 
-A source is a file. `sources/<name>.yml` says what the API is, how it pages, what
-is incremental, when it runs, and what "correct" means for the tables it lands;
-the runtime does the rest. Most connectors need no Python at all.
+A connector is a directory. `sources/<name>/source.yml` says what the API is, how
+it pages, what is incremental, when it runs, and what "correct" means for the
+tables it lands; the runtime does the rest. Beside the spec live the things a
+contract cannot hold — `extension.py`, `fixtures/`, `README.md`. Most connectors
+need no Python at all.
+
+Start it with the skeleton rather than a blank file:
+
+```bash
+uv run ingest scaffold <name>
+```
+
+That writes `sources/<name>/source.yml` as **`status: reference`**, plus a
+research README and an empty `fixtures/`. Reference means validated and built by
+the test suite, and scheduled by nothing — a new connector should not begin life
+demanding a credential nobody has pushed. Flipping it to `connected` is the last
+step of phase 4, not the first of phase 3.
 
 Four phases: **research the API, agree what only a human can decide, generate the
 connector, prove it loads.** Do not skip to generating — the questions in phase 2
@@ -72,38 +86,55 @@ Use `AskUserQuestion`. These are decisions, not facts:
 
 ## Phase 3 — Generate
 
-Write `sources/<name>.yml`. Everything in that directory is **connected**: it
-generates an unpaused hourly DAG and demands its credential on every clone of this
-repo. That is the bar — put a spec there only when it is genuinely being run.
+Fill in `sources/<name>/source.yml`, leaving `status: reference` for now.
 
-Read `reference/pylon.yml` in this skill's directory first. It is a complete
-worked example, kept here rather than in `sources/` so it documents the contract
-without the stack trying to run it, and its comments explain why each field
-exists. A test asserts it still parses, so it cannot rot into teaching something
-the loader rejects. Then:
+Read `sources/pylon/source.yml` first — the complete worked example, whose
+comments explain why each field exists. It ships as `status: reference`, so the
+test suite builds a source from it like any other connector and it cannot rot
+into teaching something the loader rejects. Its `extension.py` is the reference
+for the escape hatch, and `sources/CONTRACT.md` is that contract written down.
+
+The vocabulary itself is `sources/source.schema.json`. Prefer it over any list in
+this file: it is what the loader enforces, so it cannot go stale, and the
+`# yaml-language-server: $schema=` header the scaffold writes means an editor
+validates as you type. Then:
 
 ```bash
-uv run python -c "from ingest_runtime import spec; print(spec.load('<name>'))"
+uv run ingest validate --source <name>
 ```
 
-The loader rejects unknown keys, unknown incremental strategies, a bare `true`
-for `soft_delete`, and referential edges naming tables the spec never declared.
-A spec that loads is one the runtime can act on.
+This is the check that makes the connector reviewable without a credential. The
+schema rejects unknown keys everywhere — a misspelled `time_stamp_columns` is an
+error rather than a line nothing reads — and the lints catch what one file cannot
+see: a database, pool or DAG id colliding with another connector, a declared
+extension that is missing, a delegated resource with no builder, a rate-limit
+family nothing routes to, a cursor that is not hinted.
 
 You do **not** write a DAG. `airflow/dags/source_dags.py` builds the ingest,
 backfill and reconcile DAGs for every spec in `sources/`, using the schedule,
 timeouts and pool the spec declares. Adding the file is the whole step.
 
 Also generate:
-- the credential: add the variable the spec's `token_env` names to `.env`. There is
-  no list to update — `scripts/secrets_push.sh` greps `token_env` out of
-  `sources/*.yml`, so a new spec's credential is picked up on the next
-  `make secrets-push` with no edit anywhere
-- a test modelled on `pipeline/tests/test_build_source.py` — a `requests_mock`
-  whose handlers **implement the API's pagination**, not canned bodies. That test
-  serves two pages precisely so the paginator is exercised rather than the first
-  response happening to be the whole dataset; a single-page mock passes while a
-  broken paginator silently truncates every real load.
+- **the research note**: fill in `sources/<name>/README.md` with what phase 1
+  turned up — the rate limits you verified, the field the docs omit, the region
+  that answered 301. This is the durable half of the research; without it the
+  next person repeats it.
+- **the credential**: add the variable the spec's `token_env` names to `.env`.
+  There is no list to update — the manifest carries it, so a new connector's
+  credential is picked up on the next `make secrets-push` with no edit anywhere.
+- **fixtures**: capture a redacted page of each resource's real response into
+  `sources/<name>/fixtures/<resource>.json` (a JSON array of records), and note
+  the capture date in the README. The generic contract suite then drives this
+  connector end to end into duckdb with no further test-writing: it asserts the
+  paginator is genuinely exercised, every request carries a timeout, the declared
+  page-size parameter reaches the wire, primary keys are unique, cursors land
+  typed, and a second run is merge-idempotent.
+- **only what is genuinely this API's behaviour** as a hand-written test, in
+  `sources/<name>/test_<name>.py`. If the assertion would be true of any
+  connector, it belongs in the contract suite instead — and is probably already
+  there. Anything the generic mock cannot express (an auth endpoint, a sparse
+  projection, a page that lies) goes in `sources/<name>/fixtures/server.py`,
+  which the harness imports and calls as `register(mock, spec, fixtures)`.
 
 ### The vocabulary the loader accepts
 
@@ -151,32 +182,38 @@ pagination:
 
 Some APIs do things no configuration language should have to describe. Pylon
 returns pages claiming `has_next_page: true` while carrying no data, and its
-messages have no cross-issue endpoint so the worklist is a warehouse query. Both
-live in a module named by `extensions:` in the spec.
+messages have no cross-issue endpoint so the worklist is a warehouse query.
 
-Reach for it only after trying the declarative form — an extension is real code
-with real maintenance. But do not contort the spec to avoid one: a connector that
-quietly loses rows is worse than a connector with a Python file.
+Try the declarative form first. Two strategies need no code at all — check
+whether `cursor` fits before reaching further: if the API takes a
+"changed since" filter as a query parameter, it does, and the connector has no
+Python. An extension is real code with real maintenance. But do not contort the
+spec to avoid one: a connector that quietly loses rows is worse than a connector
+with a Python file.
 
-**The contract.** The module lives at
-`pipeline/src/ingest_runtime/sources/<name>.py`. For each resource whose strategy
-is not `full_refresh`, `build_source` looks for `build_<resource>(spec, resource,
-paced=None)` and falls back to `build_resource(spec, resource, paced=None)`, and
-raises if it finds neither — a connector that quietly skips an endpoint looks
-exactly like one whose source has no data.
+**The contract is `sources/CONTRACT.md`** — read it rather than this summary.
+The module lives at `sources/<name>/extension.py`, beside the spec, and the spec
+says `extensions: true`. For each resource whose strategy is not declarative,
+`build_source` looks for `build_<resource>(spec, resource, paced=None)`, falls
+back to `build_resource(...)`, and raises if it finds neither — a connector that
+quietly skips an endpoint looks exactly like one whose source has no data.
 
-Three things the signature does not tell you:
+Because the module is loaded by path from outside the package, it imports the
+public surface and nothing else:
 
-- **Return a dlt *source*, not a bare resource.** The CLI's samplers and the run
-  summary both walk `.resources`. A `@dlt.resource` builds fine, runs fine under
-  `pipeline.run()`, and dies on the first `--sample`.
-- **`paced` is the run's `EndpointPacer` and you must use it.** Pass it to
-  `paced_session(spec, paced)` and make every request through that session.
-  Ignoring it means the spec publishes a rate limit the connector never obeys,
-  and for a source whose resources are all delegated that is the entire budget.
-- **Give every request an explicit `timeout=`.** `requests` waits forever by
-  default, and a fan-out holds the source's pool of one while it does, so one hung
-  call wedges every later run behind it.
+```python
+from ingest_runtime.extension_api import (
+    auth_for, column_hints, endpoint_params, make_transformer,
+    paced_session, session_for, warehouse_rows,
+)
+```
+
+The obligations that signature does not state — return a source and not a bare
+resource, route every request through `session_for(spec, paced)`, give every
+request an explicit timeout, fail loudly on a short read, define `reset()` if you
+keep run-scoped state — are all in CONTRACT.md, each with the failure that put it
+there. `ingest validate` checks the ones it can see; the rest are in the
+contract suite.
 
 **`--start`/`--end` do not reach an extension.** `build_source` takes no window, so
 a delegated resource bounds itself by its own persisted cursor and `make backfill`
@@ -212,6 +249,19 @@ land. Read them. A promoted field that is `None` for every record means the path
 Then check the warehouse:
 `make ch-q Q="SELECT count() FROM raw_<name>.<table>"`.
 
+### Connect it
+
+Only once the steps above pass. Three edits, in one commit:
+
+1. `status: reference` → `status: connected` in the spec
+2. add `<name>` to `sources/CONNECTED` (one name per line, sorted)
+3. `uv run ingest manifest && uv run ingest inventory` — regenerate what shell,
+   compose, terraform and the docs read
+
+`uv run ingest validate` fails if the status and `CONNECTED` disagree, which is
+the tripwire: scheduling a connector is a deliberate act written down twice, and
+neither half is something you can fall into.
+
 Finish with `make up`. Two things only take effect once the stack is re-initialised:
 
 - **the Airflow pool** `<name>_pipeline`, which `airflow-init` creates from the
@@ -233,6 +283,10 @@ Finish with `make up`. Two things only take effect once the stack is re-initiali
 - **Never ingest by hand against the production warehouse while the stack is up.**
   Airflow serialises through the pool; an out-of-band run races the cursor.
   `--destination duckdb` is always safe.
-- **If a source needs a change to the runtime, stop.** The abstraction leaked and
-  the spec is probably wrong. Say so rather than editing `runtime.py` to fit one
-  API — that is how a generic runtime becomes six connectors in a trench coat.
+- **If a source needs a change to the runtime, stop and place it deliberately.**
+  There are three answers, and editing the middle of `runtime.py` is not one of
+  them — that is how a generic runtime becomes six connectors in a trench coat.
+  If the need is genuinely shared between APIs, it is a registry entry
+  (`auth.py`, `paginators.py`) plus its tests. If it is this API's peculiarity,
+  it goes in that connector's `extension.py`, declared as `type: extension` or
+  `paginator: extension`. If it is neither, the spec is probably wrong — say so.

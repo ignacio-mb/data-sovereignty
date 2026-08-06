@@ -1,24 +1,36 @@
 """The suite builder must turn a spec into valid GX objects without a database.
 
-The fixture is the add-source skill's own reference spec rather than a minimal
-stub: the expectations are generated from the contract, so if the worked example
-the skill hands people does not produce a sensible contract, the example is wrong.
+The fixture is the reference connector rather than a minimal stub: the
+expectations are generated from the contract, so if the worked example the
+add-source skill hands people does not produce a sensible contract, the example
+is wrong.
+
+It is loaded from the real `sources/` directory, where `status: reference` is
+what lets it live beside the connected specs without scheduling anything. It
+used to sit inside the skill, three directories from everything that reads it,
+which is how it came to declare an extension module that did not exist.
 """
 
 import types
-from pathlib import Path
 
 import pytest
-from ingest_runtime.spec import load
+from ingest_runtime.spec import SPEC_FILENAME, load, sources_dir
 from quality_runtime import config, results
 from quality_runtime.suites import raw
 
-REFERENCE = Path(__file__).resolve().parents[2] / ".claude" / "skills" / "add-source" / "reference"
+REFERENCE_SPEC = sources_dir() / "pylon" / SPEC_FILENAME
+
+
+def write(tmp_path, text, name):
+    """A connector directory, which is what the loader now expects."""
+    (tmp_path / name).mkdir(parents=True, exist_ok=True)
+    (tmp_path / name / SPEC_FILENAME).write_text(text)
+    return load(name, directory=tmp_path)
 
 
 @pytest.fixture
 def spec():
-    return load("pylon", directory=REFERENCE)
+    return load("pylon")
 
 
 def expectation_types(expectations):
@@ -108,10 +120,8 @@ class TestGeneratedFromTheSpec:
 
     def test_a_spec_can_gate_on_freshness_instead(self, spec, tmp_path):
         """A source genuinely expected to change hourly should be able to fail."""
-        text = (REFERENCE / "pylon.yml").read_text().replace(
-            "severity: warn", "severity: error")
-        (tmp_path / "pylon.yml").write_text(text)
-        strict = load("pylon", directory=tmp_path)
+        strict = write(tmp_path, REFERENCE_SPEC.read_text().replace(
+            "severity: warn", "severity: error"), "pylon")
         suite = raw.build(strict)[(strict.dataset, "issues")]
         freshness = [e for e in suite if "within the last" in (e.description or "")]
         assert freshness[0].meta["severity"] == "error"
@@ -132,6 +142,61 @@ class TestGeneratedFromTheSpec:
                      if "resolves to a loaded issues" in (e.description or ""))
         assert "LEFT ANTI JOIN raw_pylon.issues AS parent" in query
         assert "ON parent.id = child.issue_id" in query
+
+
+class TestASourceWithMoreThanOneClock:
+    """A source can have two answers to "is this stale".
+
+    An append-only event table and a slowly-changing entity table go quiet on
+    completely different timescales, and allowing only one freshness contract
+    meant declaring the less useful of them — or gating an hourly event feed on
+    a check tuned for a table that changes weekly.
+    """
+
+    TWO = (
+        "name: pair\n"
+        "status: reference\n"
+        "api:\n"
+        "  base_url: https://example.test\n"
+        "  auth: {type: bearer, token_env: PAIR_TOKEN}\n"
+        "resources:\n"
+        "  - {name: events, primary_key: id}\n"
+        "  - {name: accounts, primary_key: id}\n"
+        "quality:\n"
+        "  freshness:\n"
+        "    - {table: events, column: occurred_at, hours: 2, severity: error}\n"
+        "    - {table: accounts, column: updated_at, hours: 168}\n"
+    )
+
+    @pytest.fixture
+    def pair(self, tmp_path):
+        return write(tmp_path, self.TWO, "pair")
+
+    def test_each_entry_becomes_its_own_expectation(self, pair):
+        suites = raw.build(pair)
+        for table, column, hours in (("events", "occurred_at", 2),
+                                     ("accounts", "updated_at", 168)):
+            freshness = [text for text in descriptions(suites[(pair.dataset, table)])
+                         if "within the last" in text]
+            assert len(freshness) == 1, table
+            assert freshness[0].startswith(f"{table}.{column} is within the last {hours}h")
+
+    def test_each_entry_keeps_its_own_severity(self, pair):
+        """Advisory is the default because a quiet source is not a broken
+        pipeline — but a feed genuinely expected to move hourly can gate."""
+        suites = raw.build(pair)
+        severity = {
+            table: next(e.meta["severity"] for e in suites[(pair.dataset, table)]
+                        if "within the last" in (e.description or ""))
+            for table in ("events", "accounts")
+        }
+        assert severity == {"events": "error", "accounts": "warn"}
+
+    def test_an_entry_whose_table_never_landed_is_left_out(self, pair):
+        suites = raw.build(pair, present={"accounts"})
+        assert (pair.dataset, "events") not in suites
+        assert any("within the last" in text
+                   for text in descriptions(suites[(pair.dataset, "accounts")]))
 
 
 class TestNarrowedToWhatLanded:
@@ -178,16 +243,17 @@ class TestACompositeKey:
 
     @staticmethod
     def composite(tmp_path):
-        (tmp_path / "two.yml").write_text(
+        return write(
+            tmp_path,
             "name: two\n"
+            "status: reference\n"
             "api:\n"
             "  base_url: https://example.test\n"
             "  auth: {type: bearer, token_env: TWO_TOKEN}\n"
             "resources:\n"
             "  - name: rows\n"
-            "    primary_key: [tenant_id, row_id]\n"
-        )
-        return load("two", directory=tmp_path)
+            "    primary_key: [tenant_id, row_id]\n",
+            "two")
 
     def test_each_key_column_is_checked_for_nulls(self, tmp_path):
         spec = self.composite(tmp_path)
@@ -212,16 +278,17 @@ class TestAMinimalSpec:
 
     @pytest.fixture
     def bare(self, tmp_path):
-        (tmp_path / "bare.yml").write_text(
+        return write(
+            tmp_path,
             "name: bare\n"
+            "status: reference\n"
             "api:\n"
             "  base_url: https://example.test\n"
             "  auth: {type: bearer, token_env: BARE_TOKEN}\n"
             "resources:\n"
             "  - name: things\n"
-            "    primary_key: id\n"
-        )
-        return load("bare", directory=tmp_path)
+            "    primary_key: id\n",
+            "bare")
 
     def test_it_builds(self, bare):
         assert set(raw.build(bare)) == {("raw_bare", "things")}

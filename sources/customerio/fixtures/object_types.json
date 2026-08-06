@@ -1,0 +1,16 @@
+[
+  {
+    "id": "ot1",
+    "name": "Company",
+    "slug": "company",
+    "enabled": true,
+    "relationship_name": "companies"
+  },
+  {
+    "id": "ot2",
+    "name": "Workspace",
+    "slug": "workspace",
+    "enabled": true,
+    "relationship_name": "workspaces"
+  }
+]

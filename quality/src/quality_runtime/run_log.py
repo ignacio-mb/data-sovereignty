@@ -9,9 +9,9 @@ from .results import airflow_context
 log = logging.getLogger(__name__)
 
 COLUMNS = (
-    "dag_id", "dag_run_id", "task_id", "status", "started_at", "elapsed_seconds",
-    "mode", "destination", "resources", "load_ids", "rows_this_run",
-    "warehouse_counts", "requests_by_family",
+    "source", "dag_id", "dag_run_id", "task_id", "status", "started_at",
+    "elapsed_seconds", "mode", "destination", "resources", "load_ids",
+    "rows_this_run", "warehouse_counts", "requests_by_family",
 )
 
 
@@ -19,6 +19,10 @@ def record(summary, status="succeeded"):
     """Persist one `ingest run --summary-json` payload."""
     row = {
         **airflow_context(),
+        # The CLI has always written this into the summary; this table dropped it
+        # on the floor, so "which connectors are failing" meant string-parsing a
+        # nullable dag_id. At thirty sources that is not a query anyone writes.
+        "source": summary.get("source"),
         "status": status,
         "started_at": summary.get("started_at"),
         "elapsed_seconds": summary.get("elapsed_seconds"),

@@ -5,14 +5,9 @@ import os
 from pathlib import Path
 
 import dlt
-import pendulum
 from dlt.destinations.exceptions import DatabaseUndefinedRelation
 
 PRODUCTION_DESTINATION = "clickhouse"
-
-# Clock slack when comparing a parent's change time against the newest child
-# already loaded. Extensions implementing a parent_watermark strategy use it.
-MESSAGE_WATERMARK_FUDGE_SECONDS = 3
 
 log = logging.getLogger(__name__)
 
@@ -116,12 +111,34 @@ def ensure_database(source, destination=PRODUCTION_DESTINATION):
     log.info("warehouse database %s is present", database)
 
 
-def _as_utc(value):
-    if isinstance(value, str):
-        return pendulum.parse(value)
-    return pendulum.instance(value, tz="UTC")
+def warehouse_rows(build_query):
+    """Read from the destination this run is loading into.
 
+    For the one strategy whose worklist is a warehouse query rather than an API
+    cursor: parent_watermark asks "which parents changed more recently than the
+    newest child I already have", and only the warehouse can answer.
 
+    `build_query` receives the qualifier and returns SQL, so an extension never
+    has to know whether it is addressing a ClickHouse database or a duckdb
+    schema — the same function works against the smoke destination.
+
+    A missing table returns no rows rather than raising. Every connector that
+    reads its own destination needs that on its first run, and hand-rolling it
+    is how you end up string-matching an exception message.
+    """
+    import dlt
+
+    # The pipeline is only current while a resource is being extracted, which is
+    # exactly when a worklist is built. Reading it here rather than threading a
+    # pipeline through every builder keeps the extension signature to the three
+    # arguments the contract documents.
+    pipeline = dlt.current.pipeline()
+    with pipeline.sql_client() as client:
+        query = build_query(client.make_qualified_table_name)
+        try:
+            return client.execute_sql(query)
+        except DatabaseUndefinedRelation:
+            return []
 
 
 def table_counts(pipeline, tables):

@@ -6,16 +6,19 @@ Spec-driven ingestion into ClickHouse, built on [dlt](https://dlthub.com) 1.x.
 any REST API ──ingest (merge on the spec's primary key)──▶ ClickHouse, database raw_<source>
 ```
 
-**Nothing here is API-specific.** A connector is `sources/<name>.yml`: what the
-endpoints are, how they page, which fields are timestamps, what is incremental, when
-it runs, and what "arrived correctly" means. The runtime turns that into dlt column
-hints, a rate-limit pacer, a record transformer and a REST source.
-`.claude/skills/add-source/reference/pylon.yml` is a complete worked example.
+**Nothing here is API-specific**, and that is now literally true: the one
+per-connector module that used to live in this package (`sources/swoogo.py`) sits
+beside its spec instead. A connector is `sources/<name>/source.yml`: what the
+endpoints are, how they page, which fields are timestamps, what is incremental,
+when it runs, and what "arrived correctly" means. The runtime turns that into dlt
+column hints, a rate-limit pacer, a record transformer and a REST source.
+`sources/pylon/` is a complete worked example.
 
-Every spec in `sources/` is connected and schedules DAGs. Swoogo and Customer.io
-ship that way; a fork that is not ours should delete them.
+Which connectors schedule is `status:` in each spec, cross-checked against
+`sources/CONNECTED`. See [`docs/sources.md`](../docs/sources.md), which is
+generated.
 
-## Four fetch strategies
+## Five fetch strategies
 
 Strategies are code rather than configuration because each is an algorithm, not a
 setting.
