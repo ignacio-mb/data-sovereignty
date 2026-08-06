@@ -6,7 +6,7 @@ COMPOSE := docker compose
 RUN := $(COMPOSE) --profile cli run --rm airflow-cli
 
 .PHONY: help env require-env require-tools require-local up down nuke bootstrap sources ingest backfill quality \
-        docs status logs ch ch-q test test-dags build smoke secrets-push secrets-pull \
+        docs status logs ch ch-q validate regen test test-dags build smoke secrets-push secrets-pull \
         remote tunnels deploy-status hold unhold disk
 
 help: ## Show this help
@@ -20,8 +20,8 @@ env: ## Create .env from .env.example and generate Airflow secrets
 	 else echo ".env already exists, leaving it alone"; fi
 	@bash scripts/gen_secrets.sh .env
 	@echo "Now fill in MB_PREMIUM_EMBEDDING_TOKEN and MB_ADMIN_PASSWORD."
-	@echo "sources/ holds every connected source. swoogo ships connected — delete"
-	@echo "sources/swoogo.yml unless it is yours, or its DAG fails hourly."
+	@echo "sources/CONNECTED lists the connectors this checkout runs; each needs its"
+	@echo "token_env set or its DAG fails every tick. See docs/sources.md."
 
 # Every credential in docker-compose.yml interpolates from .env, and the
 # containers read it wholesale so a source's token needs no compose edit. Without
@@ -190,6 +190,13 @@ disk: ## What is using /data on the instance
 	@ssh $(DS_REMOTE_HOST) 'cd /data/data-sovereignty && bash scripts/disk_check.sh'
 
 # ─── Tests ───────────────────────────────────────────────────────────────────
+
+validate: ## Check every connector spec without running it
+	uv run ingest validate
+
+regen: ## Regenerate sources/manifest.json and docs/sources.md
+	uv run ingest manifest
+	uv run ingest inventory
 
 test: ## Run the offline test suite (mocked API, duckdb, no network)
 	uv run pytest

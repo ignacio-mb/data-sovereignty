@@ -228,8 +228,12 @@ def build(spec, present=None):
         for column in columns:
             suites[(database, table)].append(not_null(table, column))
 
-    freshness = contract.get("freshness") or {}
-    if freshness and landed(freshness["table"]):
+    # One freshness contract or several. A source with an append-only event table
+    # and a slowly-changing entity table has two answers to "is this stale", and
+    # allowing only one meant declaring the less useful of them.
+    for freshness in spec.freshness_checks:
+        if not landed(freshness["table"]):
+            continue
         key = (database, freshness["table"])
         if key in suites:
             suites[key].append(_freshness(

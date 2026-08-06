@@ -1,0 +1,42 @@
+[
+  {
+    "id": "msg-001",
+    "issue_id": "iss-001",
+    "timestamp": "2026-05-04T09:12:00Z",
+    "type": "customer",
+    "sender": {"id": "con-01", "email": "kim@northwind.test"},
+    "message_html": "<p>Every card is <b>blank</b> since Friday.</p>"
+  },
+  {
+    "id": "msg-002",
+    "issue_id": "iss-001",
+    "timestamp": "2026-05-06T14:03:00Z",
+    "type": "agent",
+    "sender": {"id": "usr-01", "email": "ada@example.test"},
+    "message_html": "<p>Fixed in 0.51.2 — please re-check.</p>"
+  },
+  {
+    "id": "msg-003",
+    "issue_id": "iss-002",
+    "timestamp": "2026-06-11T08:00:00Z",
+    "type": "customer",
+    "sender": {"id": "con-02", "email": "sam@cyclic.test"},
+    "message_html": "<p>The callback keeps bouncing us back to login.</p>"
+  },
+  {
+    "id": "msg-004",
+    "issue_id": "iss-002",
+    "timestamp": "2026-06-12T11:30:00Z",
+    "type": "agent",
+    "sender": {"id": "usr-02", "email": "bo@example.test"},
+    "message_html": "<p>Can you send the redirect URI you configured?</p>"
+  },
+  {
+    "id": "msg-005",
+    "issue_id": "iss-004",
+    "timestamp": "2026-07-22T10:10:00Z",
+    "type": "agent",
+    "sender": {"id": "usr-01", "email": "ada@example.test"},
+    "message_html": "<p>Row-level permissions are set per group.</p>"
+  }
+]

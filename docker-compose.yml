@@ -42,6 +42,11 @@ x-airflow-env: &airflow-env
   # (which reads the specs to generate DAGs) and the CLIs (which read them to run)
   # have to agree on one directory, and this is it.
   DS_SOURCES_DIR: /opt/project/sources
+  # An extension is loaded by path from inside sources/, which is mounted
+  # read-only. Python's attempt to write __pycache__ beside it fails harmlessly
+  # in the container and litters the repo on a laptop, where the same mount is
+  # writable.
+  PYTHONDONTWRITEBYTECODE: '1'
 
   # Container-side view of the warehouse. These deliberately override whatever
   # is in .env (which holds the host-facing localhost values), so neither side
@@ -265,9 +270,13 @@ services:
         # on every init: dlt keeps whatever it first wrote into an import directory.
         # Per source — schema_dir() is schemas/<source>/{import,export}, so a flat
         # copy would land somewhere dlt never looks.
-        for dir in /opt/project/pipeline/schemas/*/import; do
+        #
+        # Sourced from the connector's own directory now, beside the spec whose
+        # shape it pins, rather than from a parallel tree under pipeline/ that
+        # only ever held a .gitkeep.
+        for dir in /opt/project/sources/*/schemas/import; do
           [ -d "$dir" ] || continue
-          source=$(basename "$(dirname "$dir")")
+          source=$(basename "$(dirname "$(dirname "$dir")")")
           mkdir -p "/opt/dlt-state/schemas/$source/import"
           cp "$dir"/*.yaml "/opt/dlt-state/schemas/$source/import/" 2>/dev/null || true
         done
@@ -282,20 +291,21 @@ services:
           # generated DAG referencing a pool nobody created queues forever, and
           # a queued task looks like a slow one, not a broken one.
           #
-          # Names must match source_dags._orchestration: the spec pool, else
-          # <name>_pipeline.
+          # Read from sources/manifest.json, which the spec parser generates, so
+          # the pool name here cannot drift from the one the DAG asks for. This
+          # used to re-derive it in an inline `python -c` — a third dialect of
+          # the same default, in the one place where getting it wrong is silent:
+          # a DAG referencing a pool nobody created queues forever, and a queued
+          # task looks like a slow one rather than a broken one.
+          #
+          # Connected only. A reference spec generates no DAGs, so a pool for it
+          # would be an empty slot nothing ever asks for.
+          #
           # $$ throughout: a single $ is interpolated by compose itself, which
           # would substitute these shell variables with empty strings before the
           # container ever saw them — silently creating no pools at all.
-          for spec in /opt/project/sources/*.yml; do
-            [ -e "$$spec" ] || continue
-            pool=$$(python -c "
-        import sys, yaml
-        doc = yaml.safe_load(open(sys.argv[1])) or {}
-        name = doc.get(\"name\")
-        if name:
-            print((doc.get(\"orchestration\") or {}).get(\"pool\") or f\"{name}_pipeline\")
-        " "$$spec") || continue
+          jq -r ".sources[] | select(.status == \"connected\") | .pool" \
+            /opt/project/sources/manifest.json | while IFS= read -r pool; do
             [ -n "$$pool" ] || continue
             airflow pools set "$$pool" 1 \
               "Serializes dlt runs for one source: concurrent ingests would race its cursor."

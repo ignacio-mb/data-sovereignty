@@ -13,9 +13,13 @@
 #      drop it and the incremental cursor column stops existing, and the
 #      failure looks like "the source never changes" rather than an error.
 
+# yaml-language-server: $schema=../source.schema.json
+
 name: swoogo
+status: connected
 display_name: Swoogo
 docs_url: https://swoogo.readme.io
+owner: data-eng
 
 api:
   base_url: https://api.swoogo.com/api/v1
@@ -406,4 +410,4 @@ quality:
 #                   row of that other resource".
 #   search filter   the incremental bound is Swoogo's `search=updated_at>=…`
 #                   expression, built per request from the cursor.
-extensions: swoogo
+extensions: true

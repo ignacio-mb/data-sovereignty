@@ -13,6 +13,10 @@ dependencies = [
     "dlt[duckdb]>=1.28.1,<2",
     "beautifulsoup4>=4.12",
     "click>=8.1",
+    # Spec shape lives in sources/source.schema.json, and is enforced on load
+    # rather than only in CI: a spec that reaches the runtime unvalidated is one
+    # whose typo becomes a silently missing column.
+    "jsonschema>=4.21",
     "pendulum>=3.0",
     "python-dotenv>=1.0",
     "pyyaml>=6",          # source specs

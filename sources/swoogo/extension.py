@@ -20,8 +20,12 @@ from __future__ import annotations
 import logging
 
 import dlt
-
-from ..runtime import _auth, column_hints, make_transformer, paced_session
+from ingest_runtime.extension_api import (
+    column_hints,
+    endpoint_params,
+    make_transformer,
+    session_for,
+)
 
 log = logging.getLogger(__name__)
 
@@ -65,14 +69,15 @@ def build_resource(spec, resource, paced=None):
     transform = make_transformer(resource)
 
     def _fetch(since):
-        session = _authed_session(spec, paced)
+        session = session_for(spec, paced)
         events = _event_ids(spec, session)
         log.info("%s: fanning out over %d event(s)%s", resource.name, len(events),
                  f" since {since}" if since
                  else " (full read — no cursor)" if not cursor_field
                  else " (no cursor yet — full read)")
         for event_id in events:
-            for record in _pages(spec, session, endpoint, event_id, cursor_field, since):
+            for record in _pages(spec, session, resource, endpoint, event_id,
+                                 cursor_field, since):
                 yield transform(record)
 
     decorate = dlt.resource(
@@ -110,35 +115,6 @@ def build_resource(spec, resource, paced=None):
 # one per resource and falls back to build_resource, and every per-event
 # endpoint here differs only in data the spec already carries — so one function
 # serves all twelve, and a thirteenth needs no Python.
-
-
-def _authed_session(spec, paced):
-    """An authed session, paced if the run supplied a pacer.
-
-    `paced_session` is dlt's own retrying client with the spec's budget wrapped
-    around `send`, so pacing covers every request made here without this module
-    having to remember to ask before each one.
-    """
-    if paced is not None:
-        session = paced_session(spec, paced)
-    else:
-        from dlt.sources.helpers.requests.retry import Client
-
-        session = Client(raise_for_status=False).session
-
-    auth = _auth(spec)
-    if not callable(auth):
-        # Every other auth type resolves to a config dict for dlt's declarative
-        # client, which a bare session cannot use. Swoogo is oauth2, which
-        # resolves to an object; anything else here is a spec mistake.
-        # RuntimeError, not TypeError: nobody passed a bad argument — the spec
-        # names an auth type that cannot sign a bare session's requests.
-        raise RuntimeError(  # noqa: TRY004
-            f"{spec.name}: the fan-out needs an auth type that produces a "
-            f"request signer, got {spec.api['auth']['type']!r}."
-        )
-    session.auth = auth
-    return session
 
 
 def _since(cursor, lookback_seconds):
@@ -194,13 +170,23 @@ def _event_ids(spec, session):
 _EVENT_IDS = {}
 
 
-def _pages(spec, session, endpoint, event_id, cursor_field, since):
+def reset():
+    """Drop run-scoped state. Called by the loader between runs and by tests.
+
+    The worklist is cached so twelve per-event resources share one read of
+    /events. That is right within a run and wrong across two, and a test loading
+    the spec twice used to reach into this module to clear it by hand.
+    """
+    _EVENT_IDS.clear()
+
+
+def _pages(spec, session, resource, endpoint, event_id, cursor_field, since):
     """One event's worth of a child endpoint, filtered server-side."""
-    params = dict(endpoint.get("params") or {})
+    # Assembled by the runtime, not by hand: page size and its parameter name
+    # are spec facts, and a copy here would keep the old spelling the day the
+    # spec changed it.
+    params = endpoint_params(resource, endpoint)
     params["event_id"] = event_id
-    page_size = endpoint.get("page_size")
-    if page_size:
-        params[endpoint.get("page_size_param", "limit")] = page_size
     if since:
         # Swoogo's own filter grammar. Bounding server-side is what makes an
         # hourly fan-out affordable: an unchanged event answers with an empty

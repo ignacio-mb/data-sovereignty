@@ -9,20 +9,30 @@ no transforms, no marts, no metrics, no semantic layer. What the rows *mean* is
 decided in whatever project owns the warehouse's meaning, and keeping the seam
 there is deliberate — scheduling someone else's model is owning it.
 
-**Two sources ship connected: Swoogo** (`sources/swoogo.yml`) **and Customer.io**
-(`sources/customerio.yml`), because this checkout is also where they are operated
-from. Everything in `sources/` is live — each spec generates an unpaused ingest
-DAG on the schedule it declares, plus backfill and reconcile DAGs, on any stack
-that comes up, and needs the variable in its `token_env` set or that DAG fails on
-every tick. So a fork gets both whether it wants them or not: **delete the specs
-in `sources/` if you are not us**, and the stack goes back to scheduling nothing.
+**A connector is a directory: `sources/<name>/`.** `source.yml` is the whole
+contract; beside it live the things that contract cannot hold — `extension.py`
+for fetch behaviour no vocabulary expresses, `fixtures/` that prove it offline,
+`README.md` for what the API research turned up, `schemas/import/` for reviewed
+dlt overrides.
 
-`airflow/tests/test_dag_integrity.py::TestWhatThisCheckoutShips` pins the list,
-so adding or removing a spec fails a test until this paragraph agrees with it.
+**What schedules is `status:`, and it is required with no default.** A spec is
+`connected` (generates an unpaused ingest DAG plus backfill and reconcile, and
+demands the variable in its `token_env` on every clone), `paused` (the DAGs
+exist, nothing ticks), or `reference` (validated and built by the test suite,
+scheduled by nothing). Nothing falls into scheduling by omission.
 
-Pylon is the other shape: a worked reference example for an agent to copy
-(`.claude/skills/add-source/reference/pylon.yml`), deliberately NOT in
-`sources/` so nothing schedules it.
+The connected set is written down twice — `status: connected` in the spec and a
+line in **`sources/CONNECTED`** — and `ingest validate` fails when the two
+disagree. That is the tripwire: a fork that is not us empties `CONNECTED`, sets
+each status to `reference`, and the stack schedules nothing. **Which connectors
+exist is generated, not prose: [`docs/sources.md`](docs/sources.md)**, from
+`ingest inventory`.
+
+Pylon is the worked example, and it lives in `sources/pylon/` as
+`status: reference` — beside the real connectors rather than exiled to a skill
+directory, because the tests that build every spec now build it too. It was
+exiled before, and in that time it came to declare an extension module that did
+not exist without anything noticing.
 
 **Start with `.claude/skills/data-stack/SKILL.md`** — it routes to the right leaf
 skill for the task. This file is the map and the rules; the skills are the
@@ -32,7 +42,11 @@ procedures.
 
 | Path | What lives there |
 |---|---|
-| `sources/` | One YAML per connector — the source contract. **Empty on a fresh checkout.** |
+| `sources/<name>/` | One directory per connector: `source.yml` (the contract), plus `extension.py`, `fixtures/`, `README.md`, `schemas/import/` as needed. |
+| `sources/source.schema.json` | The spec vocabulary, enforced on load and by `ingest validate`. |
+| `sources/CONNECTED` | The connectors this checkout runs. The deliberate second place. |
+| `sources/manifest.json` | Generated. What shell, compose and terraform read instead of parsing YAML. |
+| `sources/CONTRACT.md` | What an `extension.py` must supply, and what it owes the runtime. |
 | `pipeline/` | `ingest` CLI — a source spec → `raw_<source>.*` via dlt |
 | `quality/` | `dq` CLI — expectations generated from each spec, results → `ops.*` |
 | `airflow/dags/` | `stack_smoke`, plus DAGs generated per spec. None import the packages. |
@@ -117,23 +131,48 @@ does change hourly can set `severity: error` and gate on it.
 
 ## Hard rules
 
-**Never add a spec to `sources/` to demonstrate something.** Anything there is
-connected: it schedules an unpaused DAG and demands a credential on every
-clone, so a spec added to illustrate a point becomes someone else's failing DAG.
-Examples go in a skill's `reference/` directory, where Pylon lives. The bar for
-`sources/` is "we actually run this" — today that is Swoogo and Customer.io, and
-`TestWhatThisCheckoutShips` fails until the list and the docs agree.
+**Never mark a spec `connected` to demonstrate something.** A connected spec
+schedules an unpaused DAG and demands a credential on every clone, so one added
+to illustrate a point becomes someone else's failing DAG. The bar for
+`status: connected` is "we actually run this", and it is asserted against
+`sources/CONNECTED` rather than against a list in a document.
+
+An example belongs in `sources/` as `status: reference` — validated, built by the
+contract suite, scheduled by nothing. That is a change from the rule this file
+used to carry ("examples go in a skill's `reference/` directory"), and the reason
+is what happened under the old one: exiled from `sources/`, the reference spec
+was outside everything that builds a source, so it declared an extension module
+that never existed and no test could notice.
 
 **Nothing here models the data.** No transforms, no marts, no metrics, no
 semantic layer, and no DAG task that builds one. If a task would make this
 pipeline responsible for the meaning of the rows rather than their arrival, it
 belongs in another project. `test_no_dag_builds_or_validates_a_model` enforces it.
 
-**A connector is a spec, not a module.** `sources/<name>.yml` is the whole
+**A connector is a spec, not a module.** `sources/<name>/source.yml` is the whole
 contract: endpoints, paging, incremental strategy, schedule, timeouts, pool, and
 expectations. Nothing about a particular API may be compiled into `pipeline/` or
-`quality/`. The one seam is `extensions:`, for fetch behaviour the declarative
-config genuinely cannot express — an explicit, named escape hatch, not a habit.
+`quality/` — and that is now literally true, which it was not while
+`ingest_runtime/sources/swoogo.py` sat inside the runtime package.
+
+The one seam is `extensions: true`, for fetch behaviour the declarative config
+genuinely cannot express. The extension lives at `sources/<name>/extension.py`,
+beside the spec that declares it, and is loaded by path — so it cannot import
+runtime internals and must go through `ingest_runtime.extension_api`, which is
+the supported surface. `sources/CONTRACT.md` is the contract; `sources/pylon/`
+is the worked example.
+
+**Two strategies are built from configuration alone** — `full_refresh` and
+`cursor` (the high-water mark pushed into the API's own query parameter). Most
+REST APIs are one of those, and such a connector has no Python at all. The other
+three (`search_window`, `parent_watermark`, `parent_fanout`) name an algorithm
+the runtime recognises and the connector supplies.
+
+**Auth types and paginator shorthands are registries**, not branches: `auth.py`
+and `paginators.py`. A scheme two APIs share is one decorated function plus its
+tests; one API's peculiarity declares `type: extension` / `paginator: extension`
+and lives with that connector. Before these, every unseen API shape edited the
+middle of `runtime.py` — connecting Swoogo added 118 lines to it.
 
 **DAGs are generated, never hand-written per source.** `airflow/dags/source_dags.py`
 builds them from the specs. A hand-written DAG would be a second place to change
@@ -240,22 +279,37 @@ the `mb db list --full` that finds the warehouse connection.
 
 ```bash
 make test          # offline: mocked API, duckdb, no network, no secrets
+uv run ingest validate    # every spec, without running it
 uv run ruff check .
 docker compose --profile cli run --rm airflow-cli airflow dags test stack_smoke
 ```
 
+`ingest validate` is the check that makes a connector reviewable. The schema
+covers shape and rejects unknown keys everywhere, so a typo is an error rather
+than a line nothing reads — `pagination.has_more_path` sat in the reference spec
+being read by nothing until this existed. The cross-spec lints cover what a
+schema cannot see from one file: two connectors colliding on a database, pool or
+DAG id; an extension that is declared and missing, or present and undeclared; a
+delegated resource with no builder; a rate-limit family nothing routes to; a
+connected spec absent from `CONNECTED`. It runs inside `make test`, so the
+offline suite catches all of it.
+
+The generic contract suite builds a source from **every** spec — references
+included — and loads it into duckdb against that connector's `fixtures/`,
+asserting the invariants no connector should have to restate: every request
+carries a timeout, the declared page-size parameter reaches the wire, primary
+keys are unique, cursors land typed, a second run is merge-idempotent. Per-source
+tests are then only what is genuinely that API's behaviour, and they live in the
+connector's directory.
+
 DAG tests need Airflow, which is deliberately outside the default environment:
 `make test-dags` (or `uv sync --group dag-tests && uv run pytest airflow/tests`).
-They pin which specs `sources/` ships, generate DAGs from the skill's reference
-spec to check the invariants that protect the warehouse, and separately assert
-that a directory with no specs schedules only `stack_smoke`.
-
-That last one is a property of the generator, not of this checkout, and used to
-be described here as a guarantee about the shipped state. It never was: the
-fixture points at an empty `tmp_path`, so it passed identically whatever
-`sources/` contained — which is how a connected source and four documents
-claiming an empty one coexisted. `TestWhatThisCheckoutShips` is the one that
-reads the real directory.
+They assert that the connected set matches `sources/CONNECTED`, that a
+`reference` spec generates no DAGs and a `paused` one generates unscheduled
+DAGs, that the generator's own defaults still agree with the spec parser's (the
+two derivations exist because DAGs may not import the runtime, and this is what
+stops them drifting), and — against an empty `tmp_path` — that a directory with
+no specs schedules only `stack_smoke`.
 
 The deploy path cannot be exercised on a laptop. What can:
 

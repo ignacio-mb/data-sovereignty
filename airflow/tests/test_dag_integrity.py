@@ -1,14 +1,16 @@
 """The DAGs are generated, so these test the generator, not a list of files.
 
-Two things are being protected. First, that a fresh checkout schedules nothing —
-a repo that quietly arrives running someone else's connector is worse than one
-that arrives running none. Second, that the safety invariants survive being
-generated: a pooled task without a timeout pins the pool forever, and a tombstone
-pass on a partial fetch wipes the warehouse. Neither can be left to whoever
-writes the next spec.
+Three things are being protected. That what this checkout schedules is what it
+says it schedules — every connected spec becomes live DAGs on anyone's stack
+the moment they `make up`. That the safety invariants survive being generated:
+a pooled task without a timeout pins the pool forever, and a tombstone pass on
+a partial fetch wipes the warehouse. And that the generator's own derivation of
+pools, DAG ids and timeouts still agrees with the spec parser's — they are two
+implementations of the same defaults, deliberately, because the DAG processor
+runs in Airflow's virtualenv and the parser lives in the runtime's.
 
-A DAG that fails to import does not fail loudly — it just stops being scheduled,
-and nobody notices until someone asks why the data is three days old.
+A DAG that fails to import does not fail loudly — it just stops being
+scheduled, and nobody notices until someone asks why the data is three days old.
 
 Needs Airflow, which is not in the default environment:
     uv run --group dag-tests pytest airflow/tests
@@ -16,7 +18,6 @@ Needs Airflow, which is not in the default environment:
 
 from __future__ import annotations
 
-import shutil
 import sys
 from pathlib import Path
 
@@ -24,7 +25,11 @@ import pytest
 
 REPO = Path(__file__).resolve().parents[2]
 DAGS_FOLDER = REPO / "airflow" / "dags"
-REFERENCE = REPO / ".claude" / "skills" / "add-source" / "reference"
+SOURCES = REPO / "sources"
+# The worked example: validated, built by the contract suite, and scheduled by
+# nothing. Copied into a tmp directory here so the generator can be tested on a
+# real spec without this suite depending on what the checkout happens to ship.
+REFERENCE = SOURCES / "pylon"
 
 pytest.importorskip("airflow", reason="install the dag-tests group to run these")
 
@@ -43,58 +48,202 @@ def _bag(sources_dir, monkeypatch):
     return bag
 
 
+def _connector(tmp_path, name="pylon", status=None, edit=None):
+    """A connector directory in `tmp_path`, from the reference spec.
+
+    A directory, not a file: the directory name is the identity everything else
+    is derived from, and the generator checks the spec's `name` against it
+    rather than trusting either alone.
+    """
+    text = (REFERENCE / "source.yml").read_text()
+    if status is not None:
+        text = text.replace("status: reference", f"status: {status}")
+    if edit is not None:
+        text = edit(text)
+    (tmp_path / name).mkdir(parents=True, exist_ok=True)
+    (tmp_path / name / "source.yml").write_text(text.replace("name: pylon", f"name: {name}"))
+    return tmp_path
+
+
 @pytest.fixture
 def empty_bag(monkeypatch, tmp_path):
     """No specs, so no ingest DAGs.
 
     This is a property of the GENERATOR, not of the checkout: tmp_path is empty
-    whatever `sources/` contains. It used to be described as "the shipped state",
-    which made it read as a guarantee about the repo — and CLAUDE.md repeated
-    that reading. It never was one: the assertion passed identically with zero
-    specs committed or fifty. What the repo actually ships is asserted in
-    TestWhatThisCheckoutShips, against the real directory.
+    whatever `sources/` contains. It used to be described as "the shipped
+    state", which made it read as a guarantee about the repo — and CLAUDE.md
+    repeated that reading. It never was one: the assertion passed identically
+    with zero specs committed or fifty. What the repo actually ships is
+    asserted in TestWhatThisCheckoutShips, against the real directory.
     """
     return _bag(tmp_path, monkeypatch)
 
 
 @pytest.fixture
 def connected_bag(monkeypatch, tmp_path):
-    """One source connected, using the skill's own worked example.
+    """One source connected, using the repo's own worked example.
 
-    Deliberately the reference spec rather than a minimal fixture: if the example
-    the skill hands people cannot produce a valid DAG, the skill is broken.
+    Deliberately the reference spec rather than a minimal fixture: if the
+    example the add-source skill hands people cannot produce a valid DAG, the
+    example is broken.
     """
-    shutil.copy(REFERENCE / "pylon.yml", tmp_path / "pylon.yml")
-    return _bag(tmp_path, monkeypatch)
+    return _bag(_connector(tmp_path, status="connected"), monkeypatch)
 
 
 class TestWhatThisCheckoutShips:
     """What `sources/` actually holds, and what that schedules.
 
-    Every spec committed here becomes three DAGs on anyone's stack the moment
-    they `make up`, and `AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION` is false, so
-    the ingest DAG is live immediately. That is a deliberate choice per source,
-    not a detail — so it is asserted against the real directory rather than a
-    temp one, and adding or removing a spec has to come here and say so.
+    Every connected spec becomes three DAGs on anyone's stack the moment they
+    `make up`, and `AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION` is false, so the
+    ingest DAG is live immediately. That is a deliberate choice per source, so
+    it is written down twice — once as `status: connected` in the spec, once as
+    a line in sources/CONNECTED — and this is where the two are made to agree.
     """
 
-    def test_the_connected_sources_are_the_ones_we_expect(self):
-        specs = sorted(p.stem for p in (REPO / "sources").glob("*.yml"))
-        assert specs == ["customerio", "swoogo"], (
-            f"sources/ holds {specs}. Every spec here ships connected: it schedules "
-            f"an unpaused DAG and needs its token_env set, on every clone of "
-            f"this repo. If that is intended, update this list and the description "
-            f"in CLAUDE.md and README.md; if not, move the spec to "
-            f".claude/skills/add-source/reference/ where pylon.yml lives."
+    @staticmethod
+    def declared_connected():
+        """sources/CONNECTED, one name per line, comments and blanks ignored.
+
+        Parsed here rather than imported so this test still means something if
+        the parser is the thing that broke.
+        """
+        names = []
+        for line in (SOURCES / "CONNECTED").read_text().splitlines():
+            stripped = line.split("#", 1)[0].strip()
+            if stripped:
+                names.append(stripped)
+        return sorted(names)
+
+    def test_the_connected_specs_are_exactly_the_ones_acknowledged(self):
+        import yaml
+
+        connected = sorted(
+            path.parent.name for path in SOURCES.glob("*/source.yml")
+            if (yaml.safe_load(path.read_text()) or {}).get("status") == "connected")
+        assert connected == self.declared_connected(), (
+            f"sources/ marks {connected} as connected and sources/CONNECTED lists "
+            f"{self.declared_connected()}. Every connected spec schedules an unpaused "
+            f"DAG and needs its token_env set, on every clone of this repo — so the "
+            f"two lists are kept in step deliberately. If the change is intended, "
+            f"edit sources/CONNECTED in the same commit."
         )
 
     def test_every_shipped_spec_names_a_credential_and_parses(self):
         """A committed spec that cannot load takes the whole DAG folder down."""
+        from ingest_runtime.spec import load_all
+
+        specs = load_all()
+        assert specs, "sources/ should hold at least the reference connector"
+        for spec in specs:
+            assert spec.token_env, f"{spec.name} names no token_env"
+
+    def test_the_real_directory_generates_the_dag_ids_the_specs_predict(self, monkeypatch):
+        """One derivation of what exists, so the deploy's verification and the
+        manifest cannot disagree with what Airflow actually registered."""
+        from ingest_runtime.spec import load_all
+
+        bag = _bag(SOURCES, monkeypatch)
+        expected = {dag_id for spec in load_all() for dag_id in spec.dag_ids}
+        assert set(bag.dag_ids) - {"stack_smoke"} == expected
+
+
+class TestStatusDecidesWhatIsScheduled:
+    """Required, with no default, precisely so that scheduling is never
+    something a spec falls into by omission."""
+
+    def test_a_reference_spec_generates_nothing_at_all(self, monkeypatch, tmp_path):
+        """This is what lets the worked example live in sources/ beside real
+        connectors instead of somewhere no test could reach it."""
+        bag = _bag(_connector(tmp_path, status="reference"), monkeypatch)
+        assert set(bag.dag_ids) == {"stack_smoke"}
+
+    def test_a_paused_spec_keeps_its_dags_and_loses_its_schedule(self, monkeypatch, tmp_path):
+        """Still triggerable by hand, ticking for nobody. That is what makes
+        "we are rotating this credential" something other than deleting the
+        spec."""
+        bag = _bag(_connector(tmp_path, status="paused"), monkeypatch)
+        assert {"pylon_ingest", "pylon_backfill"} <= set(bag.dag_ids)
+        for dag_id in bag.dag_ids:
+            if dag_id != "stack_smoke":
+                assert bag.dags[dag_id].schedule is None, dag_id
+
+    def test_a_paused_spec_builds_no_reconcile_dag(self, monkeypatch, tmp_path):
+        """The reconcile DAG exists to run on its cron; without one there is
+        nothing left of it but a tombstone pass somebody could trigger."""
+        bag = _bag(_connector(tmp_path, status="paused"), monkeypatch)
+        assert "pylon_reconcile" not in bag.dag_ids
+
+    def test_a_spec_with_no_status_is_skipped_not_defaulted(self, monkeypatch, tmp_path):
+        _connector(tmp_path, name="nostatus",
+                   edit=lambda text: text.replace("status: reference\n", ""))
+        bag = _bag(tmp_path, monkeypatch)
+        assert set(bag.dag_ids) == {"stack_smoke"}
+
+    def test_the_directory_name_is_the_identity(self, monkeypatch, tmp_path):
+        """A spec whose `name` disagrees with its directory would generate DAG
+        ids nothing else predicts, so it is skipped rather than trusted."""
+        (tmp_path / "elsewhere").mkdir()
+        (tmp_path / "elsewhere" / "source.yml").write_text(
+            (REFERENCE / "source.yml").read_text().replace(
+                "status: reference", "status: connected"))
+        bag = _bag(tmp_path, monkeypatch)
+        assert set(bag.dag_ids) == {"stack_smoke"}
+
+
+class TestTheTwoDerivationsAgree:
+    """The generator re-derives orchestration from YAML rather than importing
+    the spec parser: the DAG processor runs in Airflow's virtualenv and the
+    parser lives in the runtime's, which is the whole reason DAGs shell out.
+
+    The cost is two implementations of the same defaults. This is what stops
+    them drifting silently — and drift here is a pool that is never created, or
+    a timeout that outlives its own schedule.
+    """
+
+    @staticmethod
+    def derivations():
+        import yaml
+        from ingest_runtime.spec import load_all
+        from source_dags import _orchestration
+
+        for spec in load_all():
+            document = yaml.safe_load((spec.dir / "source.yml").read_text())
+            yield spec, _orchestration(document)
+
+    def test_the_pool_is_the_same_name(self):
+        for spec, conf in self.derivations():
+            assert conf["pool"] == spec.pool, spec.name
+
+    def test_the_schedules_are_the_same(self):
+        for spec, conf in self.derivations():
+            if not spec.schedules_dags:
+                continue
+            assert conf["schedule"] == spec.schedule, spec.name
+            assert conf["reconcile"] == spec.reconcile_schedule, spec.name
+
+    def test_the_backfill_floor_is_the_same(self):
+        for spec, conf in self.derivations():
+            assert conf["backfill_start"] == spec.backfill_start, spec.name
+
+    def test_every_timeout_default_is_the_same(self):
+        """The defaults differ per task — 55 minutes for an hourly ingest, 12
+        hours for a backfill — so a mismatch is invisible until the day a spec
+        stops declaring one."""
+        for spec, conf in self.derivations():
+            assert conf["ingest_timeout"] == spec.timeout_minutes("ingest", 55), spec.name
+            assert conf["backfill_timeout"] == spec.timeout_minutes("backfill", 720), spec.name
+            assert conf["reconcile_timeout"] == spec.timeout_minutes("reconcile", 1200), spec.name
+
+    def test_the_dag_ids_are_the_same(self, monkeypatch, tmp_path):
+        """Whether a reconcile DAG exists was re-decided in three places from
+        the same two keys, and they disagreed."""
         from ingest_runtime.spec import load
 
-        for path in sorted((REPO / "sources").glob("*.yml")):
-            spec = load(path.stem)
-            assert spec.token_env, f"{path.name} names no token_env"
+        for status in ("connected", "paused"):
+            directory = _connector(tmp_path, name="pylon", status=status)
+            bag = _bag(directory, monkeypatch)
+            spec = load("pylon", directory=directory)
+            assert set(bag.dag_ids) - {"stack_smoke"} == set(spec.dag_ids), status
 
 
 class TestEmptyByDefault:
@@ -106,9 +255,9 @@ class TestEmptyByDefault:
         assert empty_bag.dags["stack_smoke"].schedule is None
 
     def test_a_malformed_spec_does_not_unschedule_the_good_ones(self, monkeypatch, tmp_path):
-        (tmp_path / "broken.yml").write_text("name: [not a name\n")
-        shutil.copy(REFERENCE / "pylon.yml", tmp_path / "pylon.yml")
-        bag = _bag(tmp_path, monkeypatch)
+        (tmp_path / "broken").mkdir()
+        (tmp_path / "broken" / "source.yml").write_text("name: [not a name\n")
+        bag = _bag(_connector(tmp_path, status="connected"), monkeypatch)
         assert "pylon_ingest" in bag.dag_ids
 
 
@@ -241,9 +390,21 @@ class TestGeneratedDags:
     def test_a_reconcile_dag_requires_a_declared_history_floor(self, monkeypatch, tmp_path):
         """Tombstoning compares the run's window against backfill_start. Without
         one there is nothing to compare, so no reconcile DAG should exist."""
-        text = (REFERENCE / "pylon.yml").read_text()
-        text = text.replace('backfill_start: "2019-01-01"', "").replace("name: pylon", "name: nofloor")
-        (tmp_path / "nofloor.yml").write_text(text)
-        bag = _bag(tmp_path, monkeypatch)
+        directory = _connector(
+            tmp_path, name="nofloor", status="connected",
+            edit=lambda text: text.replace('backfill_start: "2019-01-01"', ""))
+        bag = _bag(directory, monkeypatch)
         assert "nofloor_ingest" in bag.dag_ids
         assert "nofloor_reconcile" not in bag.dag_ids
+
+
+def test_the_reference_connector_is_a_directory_with_its_extension_beside_it():
+    """A connector is a directory now, and the generator globs `*/source.yml`.
+
+    A flat `sources/<name>.yml` left behind by a half-done migration would be
+    silently ignored — the connector would simply stop being scheduled.
+    """
+    assert (REFERENCE / "source.yml").is_file()
+    assert (REFERENCE / "extension.py").is_file()
+    assert not list(SOURCES.glob("*.yml")), \
+        f"flat specs are no longer read: {[p.name for p in SOURCES.glob('*.yml')]}"

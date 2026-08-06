@@ -1,0 +1,22 @@
+[
+  {
+    "id": 4,
+    "deduplicate_id": "4",
+    "name": "Active Customers",
+    "description": "Workspaces with a session in the last 30 days",
+    "state": "finished",
+    "type": "dynamic",
+    "created_at": 1770500000,
+    "updated_at": 1785400000
+  },
+  {
+    "id": 9,
+    "deduplicate_id": "9",
+    "name": "Trialists",
+    "description": "In trial and not yet converted",
+    "state": "finished",
+    "type": "dynamic",
+    "created_at": 1771500000,
+    "updated_at": 1785410000
+  }
+]

@@ -1,0 +1,18 @@
+[
+  {
+    "id": 1,
+    "name": "All uncategorized email messages",
+    "description": "Default bucket for transactional sends",
+    "created_at": 1770000000,
+    "updated_at": 1784000000,
+    "hidden": false
+  },
+  {
+    "id": 2,
+    "name": "Password reset",
+    "description": "Sent when somebody asks for a new password",
+    "created_at": 1772000000,
+    "updated_at": 1785000000,
+    "hidden": false
+  }
+]

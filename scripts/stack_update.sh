@@ -349,9 +349,12 @@ mapfile -t COMPOSE_REQUIRED < <(
 # because every compose variable is present, and the only symptom is an hourly
 # DAG failing on `<NAME> is not set` — which is precisely what happened the
 # first time Swoogo reached this instance.
+#
+# From the manifest, filtered to connected sources: a `reference` spec names a
+# token for the worked example and must never make that credential mandatory.
 mapfile -t SOURCE_REQUIRED < <(
-  grep -hoE '^[[:space:]]*token_env:[[:space:]]*[A-Za-z_][A-Za-z0-9_]*' sources/*.yml 2>/dev/null \
-    | awk '{ print $2 }' | sort -u
+  jq -r '.sources[] | select(.status == "connected") | .token_env' \
+    sources/manifest.json 2>/dev/null | sort -u
 )
 
 env_before="$(sha256sum .env | cut -d' ' -f1)"
@@ -452,16 +455,17 @@ fi
 # so a deploy that connects a source is checked against the source it just added,
 # and one that removes a source no longer demands the DAGs it just deleted.
 #
-# stack_smoke unconditionally; then _ingest and _backfill for each connected
-# source. Not _reconcile: that one is generated only when the spec declares a
-# backfill_start for the tombstone guard to compare against, so requiring it would
-# fail a legitimate spec.
+# stack_smoke unconditionally, then exactly the ids the manifest says each spec
+# generates. Previously predicted here from the filename stem plus two suffixes,
+# which meant this script re-decided — in its own dialect — both what a DAG is
+# called and whether a reconcile DAG exists. Three places derived that from the
+# same two keys; now one does, and the others read it.
 expected_dags=(stack_smoke)
-for spec in sources/*.yml; do
-  [[ -e "$spec" ]] || continue
-  source_name="$(basename "$spec" .yml)"
-  expected_dags+=("${source_name}_ingest" "${source_name}_backfill")
-done
+mapfile -t spec_dags < <(
+  jq -r '.sources[] | select(.status == "connected") | .dag_ids[]' \
+    sources/manifest.json 2>/dev/null
+)
+expected_dags+=(${spec_dags[@]+"${spec_dags[@]}"})
 
 registered="$(af dags list -o json 2>/dev/null || true)"
 for dag in "${expected_dags[@]}"; do

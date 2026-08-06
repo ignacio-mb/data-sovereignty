@@ -80,6 +80,21 @@ jobs:
       - name: Lint
         run: uv run ruff check .
 
+      # Before the tests, because a bad spec should say so in one line rather
+      # than as a stack trace inside a parametrized suite — and before anything
+      # reads sources/manifest.json, which terraform will.
+      - name: Specs validate
+        run: uv run ingest validate
+
+      # Generated files, checked rather than trusted. A stale manifest means a
+      # pool that is never created or a task definition with no credential, and
+      # a stale inventory means the documented connector list is fiction again.
+      - name: Generated files are current
+        run: |
+          uv run ingest manifest --check
+          uv run ingest inventory
+          git diff --exit-code -- sources/manifest.json docs/sources.md
+
       - name: Test
         run: uv run pytest -q
 

@@ -46,16 +46,115 @@ def cli():
 
 @cli.command("sources")
 def list_sources():
-    """List the connected sources."""
+    """List the connectors on disk and what each one schedules."""
     names = available()
     if not names:
-        click.echo("no sources connected — add one with the add-source skill, "
-                   "which writes sources/<name>.yml")
+        click.echo("no sources here — add one with the add-source skill, which "
+                   "writes sources/<name>/source.yml")
         return
     for name in names:
         spec = load(name)
-        schedule = spec.orchestration.get("schedule") or "manual only"
-        click.echo(f"{name:16} {len(spec.resources):2} resources   schedule: {schedule}")
+        schedule = spec.schedule or "manual only"
+        extension = " +extension" if spec.uses_extension else ""
+        click.echo(f"{name:16} {spec.status:10} {len(spec.resources):2} resources   "
+                   f"schedule: {schedule}{extension}")
+
+
+@cli.command("validate")
+@click.option("--source", "source_name", default=None,
+              help="Validate one connector instead of all of them.")
+@click.option("--check-manifest/--no-check-manifest", default=True, show_default=True,
+              help="Also assert sources/manifest.json is current.")
+@click.option("--strict", is_flag=True, help="Treat warnings as failures.")
+def validate_command(source_name, check_manifest, strict):
+    """Check every spec without running it: shape, identity, completeness, hygiene.
+
+    This is what makes a connector reviewable. Before it, the load-bearing facts
+    — does `fields` reach the wire, is the composite key really unique, does the
+    extension supply what the spec delegated — were provable only by running the
+    thing against a live API with a real credential.
+    """
+    from .validate import ERROR, WARN, validate_all
+    from .validate import check_manifest as manifest_findings
+
+    names = [source_name] if source_name else None
+    findings = validate_all(names=names)
+    if check_manifest and not source_name:
+        findings.extend(manifest_findings())
+
+    for finding in findings:
+        click.echo(str(finding), err=finding.level == ERROR)
+
+    errors = [f for f in findings if f.level == ERROR]
+    warnings = [f for f in findings if f.level == WARN]
+    checked = ", ".join(names) if names else f"{len(available())} connector(s)"
+    if not findings:
+        click.echo(f"{checked}: clean")
+    if errors or (strict and warnings):
+        raise SystemExit(1)
+
+
+@cli.command("manifest")
+@click.option("--check", is_flag=True,
+              help="Fail if the committed manifest is stale instead of rewriting it.")
+def manifest_command(check):
+    """Regenerate sources/manifest.json — the enumeration shell and terraform read."""
+    from .manifest import build, load_manifest, manifest_path, write
+
+    if check:
+        if load_manifest() == build():
+            click.echo(f"{manifest_path().name} is current")
+            return
+        raise SystemExit(
+            f"{manifest_path()} is stale. Run `ingest manifest` and commit the result."
+        )
+    path, changed = write()
+    click.echo(f"{'wrote' if changed else 'unchanged'} {path}")
+
+
+@cli.command("inventory")
+@click.option("--write/--stdout", "write_file", default=True, show_default=True,
+              help="Write docs/sources.md, or print the table.")
+def inventory_command(write_file):
+    """Regenerate the connector inventory in docs/sources.md.
+
+    The facts about which connectors exist used to be restated in six prose
+    files — CLAUDE.md twice, two READMEs, the Makefile and a skill — and two of
+    them were already stale at two connectors. Prose keeps the mechanism;
+    generation keeps the facts.
+    """
+    from .inventory import render
+    from .inventory import write as write_inventory
+
+    if not write_file:
+        click.echo(render())
+        return
+    path, changed = write_inventory()
+    click.echo(f"{'wrote' if changed else 'unchanged'} {path}")
+
+
+@cli.command("scaffold")
+@click.argument("name")
+def scaffold_command(name):
+    """Create sources/<name>/ from a template, as `status: reference`.
+
+    Reference, never connected: a new connector should not begin its life
+    scheduling an unpaused DAG that demands a credential nobody has pushed. The
+    flip to `connected` — plus the line in sources/CONNECTED — is the deliberate
+    last step, made once the thing has been proven to load.
+    """
+    from .scaffold import create
+
+    created = create(name)
+    click.echo(f"created {created['dir']}")
+    for path in created["files"]:
+        click.echo(f"  {path}")
+    click.echo(
+        "\nNext: fill in the endpoints, then\n"
+        f"  ingest validate --source {name}\n"
+        f"  ingest run --source {name} --destination duckdb --sample 3\n"
+        "and only then set `status: connected` and add the name to sources/CONNECTED."
+    )
 
 
 @cli.command("run")

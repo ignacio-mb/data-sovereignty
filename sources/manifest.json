@@ -1,0 +1,107 @@
+{
+  "version": 1,
+  "sources": [
+    {
+      "name": "customerio",
+      "status": "connected",
+      "path": "customerio/source.yml",
+      "token_env": "CUSTOMERIO_API_KEY_ACTIVE_CUSTOMER",
+      "pool": "customerio_pipeline",
+      "database": "raw_customerio",
+      "schedule": "41 */6 * * *",
+      "reconcile": "0 5 * * 6",
+      "backfill_start": "2026-02-01",
+      "dag_ids": [
+        "customerio_ingest",
+        "customerio_backfill",
+        "customerio_reconcile"
+      ],
+      "runtime": {
+        "ingest": "standard",
+        "backfill": "standard",
+        "reconcile": "standard"
+      },
+      "extension": false,
+      "resources": [
+        "messages",
+        "campaigns",
+        "newsletters",
+        "segments",
+        "transactional",
+        "sender_identities",
+        "broadcasts",
+        "subscription_topics",
+        "object_types",
+        "snippets",
+        "optouts"
+      ],
+      "owner": "data-eng"
+    },
+    {
+      "name": "pylon",
+      "status": "reference",
+      "path": "pylon/source.yml",
+      "token_env": "PYLON_API_KEY",
+      "pool": "pylon_pipeline",
+      "database": "raw_pylon",
+      "schedule": "17 * * * *",
+      "reconcile": "0 3 * * 6",
+      "backfill_start": "2019-01-01",
+      "dag_ids": [],
+      "runtime": {
+        "ingest": "standard",
+        "backfill": "standard",
+        "reconcile": "standard"
+      },
+      "extension": true,
+      "resources": [
+        "issues",
+        "issue_messages",
+        "accounts",
+        "users",
+        "teams",
+        "contacts"
+      ],
+      "owner": null
+    },
+    {
+      "name": "swoogo",
+      "status": "connected",
+      "path": "swoogo/source.yml",
+      "token_env": "SWOOGO_ENCODED_CREDENTIALS",
+      "pool": "swoogo_pipeline",
+      "database": "raw_swoogo",
+      "schedule": "23 * * * *",
+      "reconcile": "0 4 * * 6",
+      "backfill_start": "2014-01-01",
+      "dag_ids": [
+        "swoogo_ingest",
+        "swoogo_backfill",
+        "swoogo_reconcile"
+      ],
+      "runtime": {
+        "ingest": "standard",
+        "backfill": "standard",
+        "reconcile": "standard"
+      },
+      "extension": true,
+      "resources": [
+        "events",
+        "contacts",
+        "registrants",
+        "transactions",
+        "registrant_line_items",
+        "reg_types",
+        "sessions",
+        "session_attendances",
+        "sponsors",
+        "locations",
+        "speakers",
+        "tracks",
+        "packages",
+        "discounts"
+      ],
+      "owner": "data-eng"
+    }
+  ]
+}

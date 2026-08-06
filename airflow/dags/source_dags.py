@@ -32,11 +32,23 @@ log = logging.getLogger(__name__)
 # The specs are the contract, and the DAG processor needs to read them without
 # importing the ingest package (which lives in the other virtualenv). Reading
 # YAML is the whole dependency.
+#
+# A connector is a directory: sources/<name>/source.yml, with its extension,
+# fixtures and reviewed schemas beside it. The directory name is the identity,
+# which is why the spec's `name` is checked against it below rather than trusted.
 SOURCES_DIR = os.environ.get("DS_SOURCES_DIR", "/opt/project/sources")
+SPEC_FILENAME = "source.yml"
+
+
+# Statuses that schedule. A `reference` spec is the worked example: it parses,
+# it validates, the contract suite builds a source from it — and nothing here
+# touches it. That is what lets the example live in sources/ beside real
+# connectors instead of somewhere no test could reach it.
+SCHEDULED_STATUSES = {"connected", "paused"}
 
 
 def _specs():
-    """Every source spec, or an empty list. Never raises.
+    """Every spec that schedules something, or an empty list. Never raises.
 
     A malformed spec must not take down DAG parsing for the sources that are
     fine — a DAG that fails to import does not fail loudly, it just stops being
@@ -50,23 +62,47 @@ def _specs():
     if not directory.is_dir():
         return []
     found = []
-    for path in sorted(directory.glob("*.yml")):
+    for path in sorted(directory.glob(f"*/{SPEC_FILENAME}")):
         try:
             document = yaml.safe_load(path.read_text()) or {}
             if not document.get("name"):
                 raise ValueError("no `name`")
+            status = document.get("status")
+            if not status:
+                # Required, with no default, precisely so that scheduling is
+                # never something a spec falls into by omission.
+                raise ValueError("no `status` (connected | reference | paused)")
+            if document["name"] != path.parent.name:
+                raise ValueError(
+                    f"`name` is {document['name']!r} but the directory is "
+                    f"{path.parent.name!r}")
+            if status not in SCHEDULED_STATUSES:
+                log.info("%s is status=%s — generating no DAGs", document["name"], status)
+                continue
             found.append(document)
         except Exception as error:  # noqa: BLE001 — one bad spec must not hide the rest
-            log.error("skipping %s: %s", path.name, error)
+            log.error("skipping %s: %s", path.parent.name, error)
     return found
 
 
 def _orchestration(document):
+    """Orchestration facts, with the defaults the generator applies.
+
+    Deliberately re-derived from YAML rather than imported from the spec parser:
+    the DAG processor runs in Airflow's virtualenv and the parser lives in the
+    runtime's, which is the whole reason DAGs shell out. The cost is two
+    derivations of the same defaults, and the test suite pins them against each
+    other so they cannot drift silently.
+    """
     orchestration = document.get("orchestration") or {}
     timeouts = orchestration.get("timeouts_minutes") or {}
+    # A paused connector keeps its DAGs and loses its schedule: still triggerable
+    # by hand, ticking for nobody. That is what makes "we are rotating this
+    # credential" something other than deleting the spec.
+    paused = document.get("status") == "paused"
     return {
-        "schedule": orchestration.get("schedule"),
-        "reconcile": orchestration.get("reconcile"),
+        "schedule": None if paused else orchestration.get("schedule"),
+        "reconcile": None if paused else orchestration.get("reconcile"),
         "pool": orchestration.get("pool") or f"{document['name']}_pipeline",
         "backfill_start": orchestration.get("backfill_start"),
         "ingest_timeout": int(timeouts.get("ingest", 55)),

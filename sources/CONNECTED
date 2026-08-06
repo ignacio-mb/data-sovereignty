@@ -1,0 +1,18 @@
+# The connectors this checkout actually runs.
+#
+# Every name here is a spec with `status: connected`, which means: it generates
+# an unpaused ingest DAG on any stack that comes up, and it demands the variable
+# in its `token_env` on every clone. That is a deliberate choice per connector,
+# so it is written down twice — once in the spec, once here — and `ingest
+# validate` fails if the two disagree.
+#
+# One name per line, sorted. Two connector pull requests then append different
+# lines and merge cleanly; the list used to be a Python literal inside a test,
+# where every connector rewrote the same line.
+#
+# Delete a line and the spec keeps its history but stops being ours to run.
+# A fork that is not us should empty this file and set every status to
+# `reference` — the stack then schedules nothing.
+
+customerio
+swoogo

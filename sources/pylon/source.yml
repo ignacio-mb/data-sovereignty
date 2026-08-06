@@ -9,7 +9,16 @@
 # bottom — and a contract that only fits easy APIs would be a contract that
 # breaks on the second connector.
 
+# yaml-language-server: $schema=../source.schema.json
+
 name: pylon
+# The worked example, and nothing else. `reference` is validated, built by the
+# contract suite and read by the add-source skill — and skipped by the DAG
+# generator, the pool loop, the secrets push and terraform alike. That is what
+# lets the example live beside real connectors instead of somewhere no test
+# could reach it, which is how it came to declare an extension module that did
+# not exist without anything noticing.
+status: reference
 display_name: Pylon
 docs_url: https://docs.usepylon.com
 
@@ -60,11 +69,11 @@ resources:
       cursor_field: updated_at
       lookback_seconds: 3600    # merge on id makes the re-fetched overlap idempotent
       window:                   # the backfill path
-        endpoint: {path: /issues, method: GET, page_size: 20000}
+        endpoint: {path: /issues, method: GET, page_size: 20000, family: issues_list}
         filters_on: created_at
         max_window_days: 30     # hard API cap
       search:                   # the steady-state path
-        endpoint: {path: /issues/search, method: POST, page_size: 500}
+        endpoint: {path: /issues/search, method: POST, page_size: 500, family: issues_search}
         cursor_in: body         # not a query param, unlike every other endpoint
     timestamp_columns:
       [created_at, updated_at, latest_message_time, resolution_time, snoozed_until_time]
@@ -98,7 +107,7 @@ resources:
     incremental:
       strategy: parent_watermark
       parent: issues
-      endpoint: {path: "/issues/{issue_id}/messages", method: GET}
+      endpoint: {path: "/issues/{issue_id}/messages", method: GET, family: messages}
       # 400/404/410 mean the issue is gone or scrubbed; skip it rather than fail
       # the run over a ticket that no longer exists.
       skip_statuses: [400, 404, 410]
@@ -136,10 +145,15 @@ resources:
     timestamp_columns: [created_at, updated_at, latest_customer_message_time]
 
 # Pylon's envelope, shared by every endpoint above.
+#
+# `has_more_path` used to sit here and was read by nothing: dlt's cursor
+# paginator stops when the cursor path is empty and has no such knob. It went
+# unnoticed for as long as the schema tolerated unknown keys — which is the
+# whole argument for `additionalProperties: false` in source.schema.json, and
+# this is the key that proved it.
 pagination:
   kind: cursor
   cursor_path: pagination.cursor
-  has_more_path: pagination.has_next_page
   cursor_param: cursor
   data_selector: data
 
@@ -164,10 +178,16 @@ quality:
 # What the declarative contract cannot express. Both are real Pylon behaviours,
 # and both are the reason this escape hatch exists rather than a nicer schema.
 #
-#   glitch_paginator  pages that report has_next_page: true while carrying no
-#                     data. Retries the same cursor with backoff, then gives up
-#                     loudly instead of looping forever.
-#   pending_parent_ids the issue_messages worklist: issues whose
-#                     latest_message_time is newer than the newest loaded
-#                     message. A warehouse query, not an API cursor.
-extensions: pylon
+#   build_issues        search_window: two endpoints for one table, because the
+#                       API filters them on different columns. Pages that claim
+#                       another page while carrying no data are retried with
+#                       backoff, then abandoned loudly rather than looped on.
+#   build_issue_messages parent_watermark: the worklist is issues whose
+#                       latest_message_time is newer than the newest message
+#                       already loaded. A warehouse query, not an API cursor.
+#
+# `true`, not a module name: the file is `extension.py` beside this spec, so
+# there is nothing left for a name to disagree with. It used to say
+# `extensions: pylon`, naming a module in the runtime package that was never
+# written — and no test noticed, because nothing ever built this spec.
+extensions: true
