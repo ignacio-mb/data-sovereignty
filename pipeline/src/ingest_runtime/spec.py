@@ -29,6 +29,7 @@ _TOP_LEVEL = {
 _RESOURCE_KEYS = {
     "name", "primary_key", "write_disposition", "soft_delete", "endpoint",
     "incremental", "timestamp_columns", "hint_columns", "promote", "html_text",
+    "exclude_columns",
 }
 _QUALITY_KEYS = {
     "required", "freshness", "max_deleted_fraction", "references", "not_null",
@@ -140,6 +141,23 @@ class Resource:
     incremental = property(lambda self: self._entry.get("incremental") or {})
     promote = property(lambda self: self._entry.get("promote") or {})
     html_text = property(lambda self: self._entry.get("html_text") or {})
+
+    @property
+    def exclude_columns(self):
+        """Top-level fields to drop entirely rather than land.
+
+        `promote` has no mirror for "never mind this one" — every other field
+        the source sends lands, JSON-stringified if nested. That is usually
+        right (a connector should not decide what is interesting), but it is
+        wrong for a field whose whole content is sensitive rather than
+        structural: Lever's `notes.fields`/`offers.fields` carry freeform
+        candidate-assessment text and compensation/PII, not something this
+        landing layer should retain just because the API happens to send it.
+        Dropped before the row is built, not after — it never reaches
+        `flatten_record`, so there is no JSON-stringify cost paid on data that
+        is about to be discarded.
+        """
+        return tuple(self._entry.get("exclude_columns") or ())
     @property
     def soft_delete(self):
         """'always', 'full_history', or None. Never a bare bool.
