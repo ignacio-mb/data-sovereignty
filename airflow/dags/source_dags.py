@@ -73,6 +73,18 @@ def _orchestration(document):
         "backfill_timeout": int(timeouts.get("backfill", 720)),
         "reconcile_timeout": int(timeouts.get("reconcile", 1200)),
         "retries": int(orchestration.get("retries", 1)),
+        # Every other connected source relies on the opposite of this — see
+        # CLAUDE.md, "each spec generates an unpaused ingest DAG... the
+        # moment they make up" — so this stays opt-in per spec rather than a
+        # second global default. A source whose first run has to be a
+        # deliberate, resource-by-resource backfill (Lever's per-opportunity
+        # fan-out, sized against the live account, is the case this was
+        # built for) cannot let AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION's
+        # global "false" race that backfill — confirmed the hard way this
+        # was a real race, not a theoretical one: the DAG auto-unpaused and
+        # fired on its own schedule before a deliberate backfill had even
+        # started.
+        "ships_paused": bool(orchestration.get("ships_paused", False)),
     }
 
 
@@ -108,6 +120,11 @@ def _ingest_dag(document, conf):
         start_date=pendulum.datetime(2026, 1, 1, tz="UTC"),
         catchup=False,
         max_active_runs=1,
+        # None (the default) defers to AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION,
+        # which this stack sets to false — every other connected source's ingest
+        # DAG goes live the moment `make up` creates it. True here is the one
+        # spec-level opt-out from that, not a change to the global setting.
+        is_paused_upon_creation=True if conf["ships_paused"] else None,
         default_args={"retries": conf["retries"],
                       "retry_delay": pendulum.duration(minutes=5),
                       "depends_on_past": False},
@@ -194,6 +211,9 @@ def _reconcile_dag(document, conf):
         start_date=pendulum.datetime(2026, 1, 1, tz="UTC"),
         catchup=False,
         max_active_runs=1,
+        # Same opt-out as _ingest_dag, and for the same reason: a weekly
+        # schedule is a slower race than an hourly one, not a safe one.
+        is_paused_upon_creation=True if conf["ships_paused"] else None,
         # No retry: a partial retry after a tombstone pass is the dangerous case.
         default_args={"retries": 0, "depends_on_past": False},
         tags=[name, "reconcile"],

@@ -33,6 +33,7 @@ resources:
     endpoint: {path: /widgets, page_size: 2}
     timestamp_columns: [created_at]
     promote: {owner.id: owner_id}
+    exclude_columns: [internal_notes]
 """
 
 
@@ -44,7 +45,8 @@ def probe_spec(tmp_path):
 
 def widget(n):
     return {"id": f"w{n}", "name": f"Widget {n}", "owner": {"id": f"o{n}"},
-            "meta": {"nested": True}, "created_at": "2026-01-01T00:00:00Z"}
+            "meta": {"nested": True}, "created_at": "2026-01-01T00:00:00Z",
+            "internal_notes": f"sensitive note for w{n}"}
 
 
 def test_a_spec_with_no_python_loads_into_the_warehouse(probe_spec, monkeypatch, tmp_path):
@@ -75,6 +77,12 @@ def test_a_spec_with_no_python_loads_into_the_warehouse(probe_spec, monkeypatch,
     assert [r[1] for r in rows] == ["o1", "o2", "o3"], "promoted scalar became a column"
     assert all(r[2] is False for r in rows), "tombstone column present and false"
     assert all("VARCHAR" in r[3].upper() for r in rows), "nested object stayed JSON text"
+
+    columns = {row[0] for row in con.execute(
+        "SELECT column_name FROM information_schema.columns "
+        "WHERE table_schema = 'raw_probe' AND table_name = 'widgets'"
+    ).fetchall()}
+    assert "internal_notes" not in columns, "exclude_columns must keep the field out entirely"
 
 
 class TestRateLimits:

@@ -52,7 +52,7 @@ import importlib
 import logging
 
 from .ingest.pacing import EndpointPacer
-from .ingest.transform import flatten_record, strip_html
+from .ingest.transform import _parse_ts, flatten_record, strip_html
 
 log = logging.getLogger(__name__)
 
@@ -156,11 +156,30 @@ def make_transformer(resource):
     html_fields = resource.html_text
     timestamps = resource.timestamp_columns
     tombstoned = resource.soft_delete
+    excluded = resource.exclude_columns
+    # Which promoted TARGETS need timestamp parsing. `flatten_record` only
+    # walks the record's own top-level keys, so a promoted value — dug out of
+    # a nested path below — never passes through it and would otherwise reach
+    # dlt exactly as the source sent it. hint_columns is the right source of
+    # truth for "this needs the conversion": it already has to list every
+    # promoted timestamp target (Customer.io's opened_at, sent_at, ... are
+    # promoted AND hinted), and it does NOT list promoted non-timestamps
+    # (cio_id, email) — so filtering on it here parses exactly the promoted
+    # values that are timestamps and leaves everything else untouched.
+    promoted_timestamps = set(resource.hint_columns) & set(promotions.values())
 
     def transform(record):
+        if excluded:
+            # Dropped from the RECORD, not the output row: nothing below —
+            # flatten_record's passthrough, a `promote` digging into this
+            # path, `html_text` reading it — should still see it exist. A
+            # spec excluding a field means "never mind this one", not "keep
+            # deriving other columns from it".
+            record = {k: v for k, v in record.items() if k not in excluded}
         row = flatten_record(record, timestamps)
         for path, target in promotions.items():
-            row[target] = _dig(record, path)
+            value = _dig(record, path)
+            row[target] = _parse_ts(value) if target in promoted_timestamps else value
         for source_field, target in html_fields.items():
             row[target] = strip_html(record.get(source_field) or "")
         if tombstoned:

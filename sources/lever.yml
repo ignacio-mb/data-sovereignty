@@ -1,0 +1,558 @@
+# Lever — the recruiting pipeline: candidates and everything that happens to
+# them (notes, interviews, feedback, offers, panels, referrals, resumes,
+# applications), postings, requisitions, and the account's own configuration
+# (users, stages, archive reasons, tags, sources).
+#
+# Two shapes, cost-wise. `opportunities` and the eight lookup tables below it
+# are each one endpoint, one call shape, cheap to page — a few hundred
+# requests, ever. The nine per-opportunity children exist ONLY as
+# `/opportunities/:id/...`, so landing any of them means a fetch per
+# opportunity: on the first run, ~200k opportunities × 9 endpoints, which is
+# where the real cost of this connector lives — sized against the live
+# account before writing any of it (`quality.freshness` and the fan-out
+# comments below cite the actual numbers). Every run after the first is cheap:
+# see `parent_watermark` on any of the nine for why.
+#
+# Fivetran's own Lever schema goes further still — it explodes nested arrays
+# (tags, sources, stage history, contact emails/phones) into their own
+# tables. This file deliberately does not: nested values stay
+# JSON-stringified on the row that carries them (`opportunities.tags`,
+# `opportunities.stage_changes`, `postings.content`, ...), same as every other
+# source here. Parsing those out into real tables is a transform, which is
+# explicitly not this stack's job — see CLAUDE.md's "Nothing here models the
+# data." A future project that owns the warehouse's meaning can do that
+# parsing against data that already exists; nothing about it needs a change
+# here.
+#
+# Two things about this API shape every resource below:
+#
+#   1. Lever's JSON is camelCase (createdAt, updatedAt, hiringManager, ...) —
+#      the only source here that is. dlt's naming convention snake_cases it on
+#      the way into the warehouse regardless of what this file writes, so
+#      `timestamp_columns` and `hint_columns` below use the RAW spelling
+#      (matching what the API actually sends) and land as `created_at`,
+#      `updated_at`, etc. The one place the raw spelling is NOT optional is
+#      `opportunities.incremental.cursor_field` — see that resource.
+#
+#   2. Every timestamp is a Unix INTEGER IN MILLISECONDS, not seconds and not a
+#      string. Confirmed against the live API before writing this: fetching a
+#      real opportunity and checking `createdAt`'s digit count is 13, not 10.
+#      This actually exposed a gap in the shared runtime — `_parse_ts` handled
+#      RFC3339 strings but only PASSED THROUGH numeric epochs, trusting dlt's
+#      column-hint coercion to type them. That coercion turns out to only
+#      accept SECONDS-precision integers; on milliseconds it silently lands the
+#      hinted column NULL with the real value stranded in an auto-generated
+#      `<col>__v_bigint` variant — no error, just a timestamp column that is
+#      quietly empty. Fixed in `ingest/transform.py` (`_parse_ts` now converts
+#      numeric epochs itself, detecting the unit by magnitude) rather than
+#      worked around here, because the next millisecond-epoch API would
+#      otherwise rediscover the same gap from scratch.
+#
+# Confidentiality: Lever excludes confidential postings/opportunities/
+# requisitions unless the API key was specifically granted access AND the
+# request passes `confidentiality=all`. Neither is done here — non-confidential
+# only, which is what this key can see regardless.
+
+name: lever
+display_name: Lever
+docs_url: https://hire.lever.co/developer/documentation
+
+api:
+  base_url: https://api.lever.co/v1
+  auth:
+    # Basic auth with the API key as the username and NO password. `token_env`
+    # supplies the username half automatically (it defaults to the token);
+    # `password: ""` is what makes the second half blank instead of also
+    # defaulting to the token, which is what Lever actually wants.
+    type: http_basic
+    token_env: LEVER_API_KEY
+    password: ""
+
+# One flat budget: Lever rate-limits by API key with no per-endpoint split ("no
+# individual endpoint specific limits"), a steady 10 requests/second with burst
+# to 20/second. Nothing else uses this key, so the full published steady-state
+# number is taken whole, same as Swoogo does with its own single-budget API —
+# spaced evenly rather than fired in bursts, which is what keeps it under the
+# ceiling that is actually documented as reliable.
+#
+# A family is a name, not a default: every endpoint below declares
+# `family: lever` explicitly. A resource that omitted it would fall back to a
+# family named after ITSELF, which matches nothing declared here — the pacer
+# then finds no published budget for that name and, correctly for a resource
+# that genuinely has none, does not throttle it at all. For a resource that
+# DOES share this budget, that reads as "the rate limit already works" right
+# up until it 429s.
+rate_limits:
+  lever: 600
+
+orchestration:
+  schedule: "7 * * * *"          # :07 — clear of :17/:23/:41 the other specs use
+  backfill_start: "2015-01-01"   # a conservative floor; see the note on opportunities
+  reconcile: "0 6 * * 6"         # Saturday 06:00 UTC, full history + tombstones
+  pool: lever_pipeline           # size 1: concurrent runs would race the cursor
+  # Every other spec in this repo relies on the opposite: `make up` leaves an
+  # unpaused, immediately-live ingest DAG, by design (CLAUDE.md). Lever opts
+  # out because opportunities and its nine children are ALL delegated
+  # strategies (search_window / parent_watermark) — a resource's fetch window
+  # is whatever its own persisted watermark says, forever, from the moment it
+  # first runs. If lever_ingest fires even once before a deliberate historical
+  # backfill starts, the "first run = full history" behaviour that backfill
+  # depends on is gone for whatever resource that tick touched, permanently —
+  # reaching back afterward needs `dlt pipeline lever drop <resource>`
+  # (destructive, experimental) rather than just triggering a DAG again. This
+  # already happened once, by accident, while this connector was being built:
+  # airflow-init created the DAG unpaused, and it fired on schedule before the
+  # backfill had even started.
+  #
+  # RUNBOOK — do this before ever unpausing lever_ingest or lever_reconcile:
+  #   1. docker compose up airflow-init          (creates the lever_pipeline pool)
+  #   2. Confirm both DAGs really did land paused — `airflow dags list` should
+  #      show lever_ingest and lever_reconcile with paused=True. Do this before
+  #      the next scheduled tick could fire, not after.
+  #   3. Backfill every resource, ONE AT A TIME, in this order — lookups first
+  #      (cheap, no watermark to protect), then opportunities, then its nine
+  #      children in any order (they are independent of each other once
+  #      opportunities' own live-API worklist works):
+  #        airflow dags trigger lever_backfill --conf '{"resources": "postings,users,stages,archive_reasons,sources,tags,requisitions,requisition_fields"}'
+  #        airflow dags trigger lever_backfill --conf '{"resources": "opportunities"}'
+  #        airflow dags trigger lever_backfill --conf '{"resources": "applications"}'
+  #        airflow dags trigger lever_backfill --conf '{"resources": "notes"}'
+  #        airflow dags trigger lever_backfill --conf '{"resources": "interviews"}'
+  #        airflow dags trigger lever_backfill --conf '{"resources": "feedback"}'
+  #        airflow dags trigger lever_backfill --conf '{"resources": "offers"}'
+  #        airflow dags trigger lever_backfill --conf '{"resources": "panels"}'
+  #        airflow dags trigger lever_backfill --conf '{"resources": "referrals"}'
+  #        airflow dags trigger lever_backfill --conf '{"resources": "resumes"}'
+  #        airflow dags trigger lever_backfill --conf '{"resources": "forms"}'
+  #      One at a time, not all ten queued together — and this is a stronger
+  #      warning than "nothing is gained by queuing them up front". The pool
+  #      (size 1) and lever_backfill's own max_active_runs=1 DO already force
+  #      these to run sequentially even if all ten triggers are fired at once;
+  #      what they do NOT do is stop the sequence on a failure. max_active_runs
+  #      only tracks whether a run is ACTIVE, not whether it succeeded, so a
+  #      failed run still frees the slot and the next queued group starts
+  #      anyway — ten triggers fired up front can silently burn through the
+  #      whole ~2.5-3 day sequence with one resource broken in the middle and
+  #      nobody the wiser until every group has reported in.
+  #
+  #      scripts/lever_backfill_sequence.sh automates exactly this list —
+  #      triggers one group, polls for its terminal state, and stops the whole
+  #      sequence the moment one fails, rather than requiring someone to watch
+  #      each multi-hour run by hand. Run it inside the tmux session (it blocks
+  #      for the whole sequence and must survive a disconnect), and unpause
+  #      lever_backfill itself first if it was paused for testing — ships_paused
+  #      above only gates lever_ingest/lever_reconcile, never lever_backfill.
+  #   4. Only once every one of the above has actually succeeded:
+  #        airflow dags unpause lever_ingest
+  #        airflow dags unpause lever_reconcile
+  ships_paused: true
+  timeouts_minutes:
+    # 55 (must stay under the hour) is the right number for what this DAG is
+    # SUPPOSED to do: a real incremental run measures 22-26 seconds. 240 is a
+    # deliberate margin above that, not a sizing for any real workload —
+    # requested explicitly to give slow-API-response headroom. It does not
+    # make this DAG a substitute for lever_backfill: a resource actually
+    # missing its watermark still needs the full 6-8h (see `backfill` below),
+    # so this only changes how long that failure mode runs — and how much of
+    # the shared rate-limit budget and the lever_pipeline pool it consumes —
+    # before timing out, not whether it succeeds. ships_paused is still what
+    # keeps this DAG off an unbackfilled resource in the first place.
+    ingest: 240
+    # 120 was set back when opportunities was the only resource this DAG
+    # covered — true before the nine-endpoint fan-out existed, false since.
+    # A genuine first-ever backfill (no watermark yet, ~200k opportunities ×
+    # 9 endpoints) is now measured at ~3.2 req/sec sequential or, with the
+    # fan-out's own concurrency (_FAN_OUT_WORKERS in lever.py), close to
+    # the shared 10 req/sec budget — call it 6-8 hours for ONE resource at
+    # that scale. 1440 (24h) gives real margin over that per resource; it is
+    # NOT enough for triggering `--resources all` in one shot, which is why
+    # the runbook fires this DAG once per resource rather than once for all
+    # ten — see the note on `backfill_start` below.
+    backfill: 1440
+    reconcile: 60
+
+# Lever's cursor envelope, shared by every endpoint below. Confirmed against the
+# live docs' example payloads: `next` is present only when there IS a next
+# page, and absent (not null) on the page where `hasNext` is false — so the
+# cursor paginator's default "stop when the cursor is missing" is exactly
+# right, with no Customer.io-style "next on the last page too" workaround
+# needed. The same config also covers the small unpaginated lookup endpoints
+# (stages, archive_reasons, sources, tags, requisition_fields) correctly: no
+# `next` ever appears on those, so they fetch once and stop.
+pagination:
+  kind: cursor
+  cursor_path: next
+  cursor_param: offset
+  data_selector: data
+
+resources:
+  # ── opportunities ─────────────────────────────────────────────────────────
+  # The candidate pipeline itself, and the only resource here that changes
+  # often enough to need a real incremental cursor rather than a full re-fetch
+  # every hour.
+  - name: opportunities
+    primary_key: id
+    write_disposition: merge
+    incremental:
+      strategy: search_window
+      # RAW API spelling, not `updated_at`. dlt's incremental tracker reads
+      # this key off the record as this extension yields it — BEFORE dlt's own
+      # schema normalization renames anything — so it has to match what the
+      # API actually sends. Using the warehouse column name here would mean
+      # the cursor silently never advances: every run would look like a first
+      # run, forever.
+      #
+      # It is also not quite the same thing as the `updatedAt` FIELD in the
+      # response. Per Lever's own docs: "the opportunities attribute updatedAt
+      # does NOT correspond with this filter... this filter will filter based
+      # on ANY changes that occurred on the opportunity" — a superset of what
+      # the field tracks, which is the safe direction for an incremental bound
+      # to be wrong in.
+      cursor_field: updatedAt
+      # Re-reads a little of what was already loaded; free, because opportunities
+      # merges on id. Covers a record written mid-run, between this run reading
+      # its cursor and the run actually finishing.
+      lookback_seconds: 300
+      endpoint:
+        path: /opportunities
+        page_size: 100
+        family: lever
+    timestamp_columns: [createdAt, updatedAt, lastInteractionAt, lastAdvancedAt, snoozedUntil]
+    # `archivedAt` is documented as a flat top-level field but is NOT one on
+    # the live API — confirmed by sampling real records: it arrives nested as
+    # `archived: {reason, archivedAt}`, only present at all once a candidate
+    # is actually archived. Promoted rather than left JSON-stringified, since
+    # "when was this archived" is exactly the kind of thing a funnel report
+    # needs as a real column.
+    promote:
+      archived.archivedAt: archived_at
+      archived.reason: archive_reason_id
+    # hint_columns has to be explicit here rather than defaulting to
+    # timestamp_columns: archived_at is a PROMOTED column, dug out of a nested
+    # path rather than read off the record's own top level, so it is not
+    # something timestamp_columns could name — but it still needs the
+    # timestamp hint, or it lands exactly like the unfixed `_parse_ts` bug
+    # this file's header describes, just via the promote path instead.
+    hint_columns:
+      [createdAt, updatedAt, lastInteractionAt, lastAdvancedAt, snoozedUntil, archived_at]
+    # No soft_delete. This resource is fetched by the extension (search_window
+    # is not one of the declarative strategies), and the runtime's tombstone
+    # pass only trusts a run it can prove covered full history — which it can
+    # only prove for resources `--start`/`--end` actually reach. Those flags
+    # never reach an extension (build_source takes no window; a delegated
+    # resource bounds itself solely by its own persisted cursor), so
+    # `full_history` here would be silently skipped by every reconcile run
+    # forever. True deletions are rare in Lever (GDPR-driven removal; an
+    # archived-but-not-deleted candidate stays visible via `archived_at` above)
+    # — accepted as out of scope rather than built around, same tradeoff
+    # Swoogo makes for its own per-event children.
+
+  # ── account-wide lookups ─────────────────────────────────────────────────
+  # Small and fully re-fetched every run, so absence really does mean deleted.
+  # Merge rather than replace: replace would drop the rows the tombstone pass
+  # needs to still be there to compare against.
+
+  - name: postings
+    primary_key: id
+    write_disposition: merge
+    soft_delete: always
+    endpoint:
+      path: /postings
+      page_size: 100
+      family: lever
+      params:
+        # Unfiltered GET /postings already returns every STATE (published,
+        # internal, closed, draft, pending, rejected) — but for published
+        # postings it silently narrows to public distribution only, unless
+        # both channels are asked for explicitly. Confirmed against the docs'
+        # own warning on this endpoint.
+        distributionChannel: [public, internal]
+    timestamp_columns: [createdAt, updatedAt]
+
+  - name: users
+    primary_key: id
+    write_disposition: merge
+    soft_delete: always
+    endpoint:
+      path: /users
+      page_size: 100
+      family: lever
+      params:
+        # Unfiltered GET /users returns only ACTIVE users. Former employees are
+        # still the owner/hiringManager on years-old opportunities and
+        # requisitions, so excluding them would leave those foreign keys
+        # dangling for no reason.
+        includeDeactivated: true
+    timestamp_columns: [createdAt, deactivatedAt]
+
+  - name: stages
+    primary_key: id
+    write_disposition: merge
+    soft_delete: always
+    endpoint: {path: /stages, family: lever}
+
+  - name: archive_reasons
+    primary_key: id
+    write_disposition: merge
+    soft_delete: always
+    endpoint: {path: /archive_reasons, family: lever}
+
+  # No `id` on either — Lever keys both by their display text, matching
+  # Customer.io's snippets (keyed by name for the same reason: merging on a
+  # key the API does not return would append a duplicate row every run).
+  - name: sources
+    primary_key: text
+    write_disposition: merge
+    soft_delete: always
+    endpoint: {path: /sources, family: lever}
+
+  - name: tags
+    primary_key: text
+    write_disposition: merge
+    soft_delete: always
+    endpoint: {path: /tags, family: lever}
+
+  - name: requisitions
+    primary_key: id
+    write_disposition: merge
+    soft_delete: always
+    endpoint:
+      path: /requisitions
+      page_size: 100
+      family: lever
+    timestamp_columns: [createdAt, updatedAt, closedAt, timeToFillStartAt, timeToFillEndAt]
+
+  - name: requisition_fields
+    primary_key: id
+    write_disposition: merge
+    soft_delete: always
+    endpoint: {path: /requisition_fields, family: lever}
+
+  # ── per-opportunity children ────────────────────────────────────────────
+  # None of these nine has an account-wide endpoint — only
+  # /opportunities/:id/<child> — so each is fetched once per opportunity in
+  # the shared worklist the extension computes: opportunities whose updatedAt
+  # moved since this resource's own watermark. Confirmed against the live API
+  # (100 hired candidates, cross-referencing every child timestamp here
+  # against its parent's updatedAt) that a child changing moves the parent's
+  # updatedAt too, in 99 cases out of 100 — the hundredth was a 6-second lag,
+  # comfortably inside the lookback below.
+  #
+  # None of the nine except feedback carries an updatedAt of its own, so a
+  # triggered opportunity gets ALL of its rows on that endpoint re-read in
+  # full rather than filtered further — cheap, since none of these ever holds
+  # more than a handful of rows per opportunity. That also means an EDIT to
+  # an existing note or a rescheduled interview is caught the same way a
+  # brand-new one is, without needing a per-record cursor at all.
+  #
+  # No soft_delete, same reasoning as opportunities: parent_watermark is
+  # fetched by the extension, `--start`/`--end` never reach it, and the
+  # runtime's tombstone pass only trusts a run it can prove covered full
+  # history. notes and feedback DO carry their own `deletedAt` field, which
+  # is a real deletion signal from Lever itself rather than this stack's
+  # absence-based one — parsed as an ordinary timestamp column below, not
+  # wired into `soft_delete`, since that mechanism is specifically about
+  # absence and this is a field.
+
+  - name: applications
+    primary_key: id
+    write_disposition: merge
+    incremental:
+      strategy: parent_watermark
+      parent: opportunities
+      lookback_seconds: 300
+      endpoint: {path: "/opportunities/{opportunity_id}/applications", family: lever}
+    # No updatedAt on this endpoint — verified live. An application is a
+    # point-in-time submission event, not something Lever mutates afterward.
+    timestamp_columns: [createdAt, _opportunity_updated_at]
+    # Same nested shape as opportunities' own `archived` — confirmed live,
+    # not assumed from that precedent. See the note on opportunities.
+    promote:
+      archived.archivedAt: archived_at
+      archived.reason: archive_reason_id
+    hint_columns: [createdAt, archived_at, _opportunity_updated_at]
+
+  - name: notes
+    primary_key: id
+    write_disposition: merge
+    incremental:
+      strategy: parent_watermark
+      parent: opportunities
+      lookback_seconds: 300
+      endpoint: {path: "/opportunities/{opportunity_id}/notes", family: lever}
+    timestamp_columns: [createdAt, completedAt, deletedAt, _opportunity_updated_at]
+    # `fields` is a freeform nested blob, not structure worth landing —
+    # confirmed live: it carries whatever a note's custom template put there,
+    # which on this account includes an automated candidate-assessment
+    # write-up (skills, experience estimate, a fit "summary"). Landing it
+    # verbatim would make this pipeline the system of record for that content;
+    # `text`/`type`/`user` already cover what a note IS without it.
+    exclude_columns: [fields]
+
+  - name: interviews
+    primary_key: id
+    write_disposition: merge
+    incremental:
+      strategy: parent_watermark
+      parent: opportunities
+      lookback_seconds: 300
+      endpoint: {path: "/opportunities/{opportunity_id}/interviews", family: lever}
+    # `date` is the scheduled interview time — confirmed epoch-ms live, not
+    # merely documented, same as every *At field.
+    timestamp_columns: [createdAt, canceledAt, date, _opportunity_updated_at]
+
+  - name: feedback
+    primary_key: id
+    write_disposition: merge
+    incremental:
+      strategy: parent_watermark
+      parent: opportunities
+      lookback_seconds: 300
+      endpoint: {path: "/opportunities/{opportunity_id}/feedback", family: lever}
+    # The one endpoint of the nine that DOES carry its own updatedAt — Lever's
+    # own docs note it is null until a feedback form is edited after being
+    # completed. Not used as a cursor here (the watermark is the parent's),
+    # but still worth a real timestamp column rather than a bare int.
+    timestamp_columns: [createdAt, completedAt, updatedAt, deletedAt, _opportunity_updated_at]
+
+  - name: offers
+    primary_key: id
+    write_disposition: merge
+    incremental:
+      strategy: parent_watermark
+      parent: opportunities
+      lookback_seconds: 300
+      endpoint: {path: "/opportunities/{opportunity_id}/offers", family: lever}
+    timestamp_columns: [createdAt, approvedAt, sentAt, _opportunity_updated_at]
+    # `fields` is the offer letter's own answer set — confirmed live: salary
+    # amount/currency, equity, candidate address, manager and signer ids,
+    # sometimes a full job description. `status`/`approved`/`sent_document`
+    # already say what this pipeline needs to know about an offer; the
+    # compensation and PII payload behind it does not belong in raw landing.
+    exclude_columns: [fields]
+
+  - name: panels
+    primary_key: id
+    write_disposition: merge
+    incremental:
+      strategy: parent_watermark
+      parent: opportunities
+      lookback_seconds: 300
+      endpoint: {path: "/opportunities/{opportunity_id}/panels", family: lever}
+    # start/end are the panel's scheduled window — confirmed epoch-ms live.
+    timestamp_columns: [createdAt, canceledAt, start, end, _opportunity_updated_at]
+
+  - name: referrals
+    primary_key: id
+    write_disposition: merge
+    incremental:
+      strategy: parent_watermark
+      parent: opportunities
+      lookback_seconds: 300
+      endpoint: {path: "/opportunities/{opportunity_id}/referrals", family: lever}
+    timestamp_columns: [createdAt, completedAt, _opportunity_updated_at]
+
+  - name: resumes
+    primary_key: id
+    write_disposition: merge
+    incremental:
+      strategy: parent_watermark
+      parent: opportunities
+      lookback_seconds: 300
+      endpoint: {path: "/opportunities/{opportunity_id}/resumes", family: lever}
+    # `parsedData.positions`/`parsedData.schools` (Fivetran's
+    # OPPORTUNITY_POSITION/OPPORTUNITY_SCHOOL) stay JSON-stringified inside
+    # `parsed_data` rather than becoming their own tables — exploding a
+    # candidate's resume-parsed work/education history into child tables is
+    # exactly the kind of modeling decision that belongs to whatever project
+    # owns the warehouse's meaning, not to ingestion.
+    timestamp_columns: [createdAt, _opportunity_updated_at]
+
+  - name: forms
+    primary_key: id
+    write_disposition: merge
+    incremental:
+      strategy: parent_watermark
+      parent: opportunities
+      lookback_seconds: 300
+      endpoint: {path: "/opportunities/{opportunity_id}/forms", family: lever}
+    # Unconfirmed against live data — this account has never used profile
+    # forms (0/100 in the same live sample everything else here was verified
+    # against), so this table will not exist until dlt sees a first row.
+    # createdAt/completedAt are taken from the docs rather than a real
+    # payload; worth re-checking against a live record the day one appears.
+    timestamp_columns: [createdAt, completedAt, _opportunity_updated_at]
+
+quality:
+  required: [opportunities]
+  freshness:
+    table: opportunities
+    column: updated_at
+    hours: 24
+    # Advisory. Candidate activity is bursty around interview cycles and
+    # hiring freezes — a quiet week is normal operation, not a broken pipeline.
+    severity: warn
+  max_deleted_fraction: 0.5
+  references:
+    # Not yet verified against the live account (that happens in Phase 4, once
+    # this is running) — kept advisory until a real run confirms zero orphans,
+    # the same discipline Swoogo's registrant_line_items reference documents.
+    - {child: opportunities.owner, parent: users.id, severity: warn}
+    - {child: opportunities.stage, parent: stages.id, severity: warn}
+    - {child: opportunities.archive_reason_id, parent: archive_reasons.id, severity: warn}
+    - {child: postings.user, parent: users.id, severity: warn}
+    - {child: requisitions.hiring_manager, parent: users.id, severity: warn}
+    - {child: requisitions.owner, parent: users.id, severity: warn}
+    # Advisory, not gating — and this was originally written the other way
+    # round, on the reasoning that opportunity_id is set by THIS connector
+    # from the id it just used to fetch the child, so an orphan could only
+    # mean the extension itself is broken. Live data proved that wrong: a
+    # real incremental run left 31 applications (and rows in five of the
+    # other eight) pointing at opportunities not yet in raw_lever.opportunities
+    # at all. The id itself was correct — a real Lever opportunity — it just
+    # hadn't been loaded by THIS resource yet. opportunities and the nine
+    # children each track their own independent watermark; opportunities'
+    # cursor had gone stale for a few hours while the children kept
+    # discovering "changed since floor" opportunities from fresh live
+    # queries, so a child's watermark can legitimately run ahead of the
+    # parent's own sync. Self-healing the moment opportunities catches up,
+    # not a sign of a broken fetch — which is exactly what "advisory" means.
+    - {child: applications.opportunity_id, parent: opportunities.id, severity: warn}
+    - {child: applications.archive_reason_id, parent: archive_reasons.id, severity: warn}
+    - {child: notes.opportunity_id, parent: opportunities.id, severity: warn}
+    - {child: interviews.opportunity_id, parent: opportunities.id, severity: warn}
+    - {child: feedback.opportunity_id, parent: opportunities.id, severity: warn}
+    - {child: offers.opportunity_id, parent: opportunities.id, severity: warn}
+    - {child: panels.opportunity_id, parent: opportunities.id, severity: warn}
+    - {child: referrals.opportunity_id, parent: opportunities.id, severity: warn}
+    - {child: resumes.opportunity_id, parent: opportunities.id, severity: warn}
+    - {child: forms.opportunity_id, parent: opportunities.id, severity: warn}
+  not_null:
+    opportunities: [created_at]
+    postings: [text, created_at]
+    users: [name, created_at]
+    requisitions: [name, created_at]
+    applications: [opportunity_id, created_at]
+    notes: [opportunity_id, created_at]
+    interviews: [opportunity_id, created_at]
+    feedback: [opportunity_id, created_at]
+    offers: [opportunity_id, created_at]
+    panels: [opportunity_id, created_at]
+    referrals: [opportunity_id, created_at]
+    resumes: [opportunity_id, created_at]
+    forms: [opportunity_id, created_at]
+
+# Why this connector has Python at all:
+#
+#   updated-since filter   opportunities' fetch depends on a persisted cursor
+#                           rather than being re-read whole every run —
+#                           `updated_at_start` built per request from dlt's
+#                           own incremental state.
+#   per-opportunity fan-out none of the nine children below has an
+#                           account-wide endpoint, so each is fetched once per
+#                           opportunity in a worklist computed from a
+#                           hand-rolled watermark — dlt.sources.incremental()
+#                           cannot express "advance based on the PARENT's
+#                           timestamp" when most children carry no timestamp
+#                           of their own to bind it to.
+extensions: lever

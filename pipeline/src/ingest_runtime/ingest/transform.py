@@ -25,13 +25,33 @@ _MESSAGE_TIMESTAMP_KEYS = ("timestamp",)
 _DIRECTORY_TIMESTAMP_KEYS = ("created_at", "updated_at", "latest_customer_message_time")
 
 
+# A seconds-precision epoch for any plausible record date is ~10 digits
+# (2026 is 1.78e9); milliseconds is ~13 (1.78e12). 1e12 sits cleanly between
+# "latest plausible seconds epoch" and "earliest plausible ms epoch" for any
+# date this pipeline will ever see, so the magnitude alone disambiguates them.
+_MS_EPOCH_THRESHOLD = 1e12
+
+
 def _parse_ts(value):
-    """RFC3339 string -> tz-aware datetime, so dlt types the column as timestamp
-    and cursor/watermark comparisons are on datetimes, not strings."""
+    """RFC3339 string or Unix epoch number -> tz-aware datetime, so dlt types
+    the column as timestamp and cursor/watermark comparisons are on datetimes,
+    not strings or raw integers.
+
+    Numeric epochs are parsed explicitly rather than left for dlt's column-hint
+    coercion to catch: that coercion only accepts SECONDS-precision integers,
+    and silently produces a null column plus a stranded `<col>__v_bigint`
+    variant for MILLISECONDS-precision ones (Lever, and most JS-originated
+    APIs) — discovered by loading one and inspecting the destination schema,
+    not by any error. Converting here means the value dlt sees is already a
+    real datetime, so the destination type is never in question.
+    """
     if value is None or value == "":
         return None
     if isinstance(value, str):
         return pendulum.parse(value)
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        seconds = value / 1000 if abs(value) >= _MS_EPOCH_THRESHOLD else value
+        return pendulum.from_timestamp(seconds)
     return value
 
 

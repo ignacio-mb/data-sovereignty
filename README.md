@@ -67,10 +67,11 @@ make up       # start services, bootstrap Metabase, provision an API key
 make smoke    # prove the plumbing: CLIs, warehouse, Metabase, dlt state
 ```
 
-`make up` schedules whatever is in `sources/` — on a fresh clone that is Swoogo
-and Customer.io, ours, which will fail on every tick without their credentials.
-Delete them unless you are us. Then ask Claude to *"connect the Zendesk API"* —
-or whichever source you have — and then *"what's the state of my pipeline?"*
+`make up` schedules whatever is in `sources/` — on a fresh clone that is Swoogo,
+Customer.io, and Lever, ours, which will fail on every tick without their
+credentials. Delete them unless you are us. Then ask Claude to *"connect the
+Zendesk API"* — or whichever source you have — and then *"what's the state of
+my pipeline?"*
 
 ## Connecting a source
 

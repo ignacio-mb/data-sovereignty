@@ -9,13 +9,25 @@ no transforms, no marts, no metrics, no semantic layer. What the rows *mean* is
 decided in whatever project owns the warehouse's meaning, and keeping the seam
 there is deliberate — scheduling someone else's model is owning it.
 
-**Two sources ship connected: Swoogo** (`sources/swoogo.yml`) **and Customer.io**
-(`sources/customerio.yml`), because this checkout is also where they are operated
-from. Everything in `sources/` is live — each spec generates an unpaused ingest
-DAG on the schedule it declares, plus backfill and reconcile DAGs, on any stack
-that comes up, and needs the variable in its `token_env` set or that DAG fails on
-every tick. So a fork gets both whether it wants them or not: **delete the specs
-in `sources/` if you are not us**, and the stack goes back to scheduling nothing.
+**Three sources ship connected: Swoogo** (`sources/swoogo.yml`)**, Customer.io**
+(`sources/customerio.yml`)**, and Lever** (`sources/lever.yml`), because this
+checkout is also where they are operated from. Everything in `sources/` is
+live — each spec generates an unpaused ingest DAG on the schedule it declares,
+plus backfill and reconcile DAGs, on any stack that comes up, and needs the
+variable in its `token_env` set or that DAG fails on every tick. So a fork gets
+all three whether it wants them or not: **delete the specs in `sources/` if you
+are not us**, and the stack goes back to scheduling nothing.
+
+Lever's `opportunities` — the only resource on any shipped spec whose fetch
+depends on a persisted incremental cursor rather than a full re-fetch every
+run — has no `soft_delete`. The runtime's tombstone pass only trusts a run it
+can prove covered full history, and `--start`/`--end` never reach a
+strategy the declarative config can't express (`build_source` takes no
+window; a delegated resource bounds itself solely by its own cursor — see
+`ingest/runtime.py`), so `full_history` there would be silently skipped by
+every reconcile run forever. Lever's own hard-deletes are rare (GDPR-driven);
+archived-but-not-deleted candidates stay visible via `archivedAt`, a normal
+field on every load.
 
 `airflow/tests/test_dag_integrity.py::TestWhatThisCheckoutShips` pins the list,
 so adding or removing a spec fails a test until this paragraph agrees with it.

@@ -80,7 +80,7 @@ class TestWhatThisCheckoutShips:
 
     def test_the_connected_sources_are_the_ones_we_expect(self):
         specs = sorted(p.stem for p in (REPO / "sources").glob("*.yml"))
-        assert specs == ["customerio", "swoogo"], (
+        assert specs == ["customerio", "lever", "swoogo"], (
             f"sources/ holds {specs}. Every spec here ships connected: it schedules "
             f"an unpaused DAG and needs its token_env set, on every clone of "
             f"this repo. If that is intended, update this list and the description "
@@ -247,3 +247,50 @@ class TestGeneratedDags:
         bag = _bag(tmp_path, monkeypatch)
         assert "nofloor_ingest" in bag.dag_ids
         assert "nofloor_reconcile" not in bag.dag_ids
+
+
+class TestShipsPaused:
+    """A source whose first run must be a deliberate, resource-by-resource
+    backfill (Lever's per-opportunity fan-out is the case this was built for)
+    cannot let AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION's global "false" race
+    it — confirmed the hard way this was a real race, not a theoretical one:
+    lever_ingest auto-unpaused and fired on its own schedule before a
+    deliberate backfill had even started.
+    """
+
+    def test_unset_leaves_the_default_pause_behaviour_alone(self, connected_bag):
+        """pylon.yml names no `ships_paused`, so it must fall through to None —
+        deferring to the global default — not silently pick up True or False."""
+        assert connected_bag.dags["pylon_ingest"].is_paused_upon_creation is None
+        assert connected_bag.dags["pylon_reconcile"].is_paused_upon_creation is None
+
+    def test_ships_paused_pauses_ingest_and_reconcile(self, monkeypatch, tmp_path):
+        text = (REFERENCE / "pylon.yml").read_text()
+        text = text.replace("name: pylon", "name: paused_example")
+        text = text.replace(
+            "pool: pylon_pipeline          # size 1: concurrent runs would race the cursor",
+            "pool: pylon_pipeline          # size 1: concurrent runs would race the cursor\n"
+            "  ships_paused: true",
+        )
+        (tmp_path / "paused_example.yml").write_text(text)
+        bag = _bag(tmp_path, monkeypatch)
+
+        assert bag.dags["paused_example_ingest"].is_paused_upon_creation is True
+        assert bag.dags["paused_example_reconcile"].is_paused_upon_creation is True
+
+    def test_ships_paused_does_not_leak_into_other_sources(self, monkeypatch, tmp_path):
+        """One source opting into ships_paused must not pause a source sharing
+        the same DagBag — this is a per-spec flag, not a second global."""
+        paused_text = (REFERENCE / "pylon.yml").read_text()
+        paused_text = paused_text.replace("name: pylon", "name: paused_example")
+        paused_text = paused_text.replace(
+            "pool: pylon_pipeline          # size 1: concurrent runs would race the cursor",
+            "pool: pylon_pipeline          # size 1: concurrent runs would race the cursor\n"
+            "  ships_paused: true",
+        )
+        (tmp_path / "paused_example.yml").write_text(paused_text)
+        shutil.copy(REFERENCE / "pylon.yml", tmp_path / "pylon.yml")
+        bag = _bag(tmp_path, monkeypatch)
+
+        assert bag.dags["paused_example_ingest"].is_paused_upon_creation is True
+        assert bag.dags["pylon_ingest"].is_paused_upon_creation is None
