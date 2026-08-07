@@ -43,18 +43,25 @@ REQUIRED=(
   AIRFLOW_DB
 )
 
-# Plus one token per connected source, named by that source's own spec rather
-# than listed here. No source ships with the repo, so a clean checkout pushes
-# none — and naming one would make an unconnected source's key mandatory
-# configuration for a stack that ingests nothing.
+# Plus every credential a connected source names, discovered from that source's
+# own spec rather than listed here. No source ships with the repo, so a clean
+# checkout pushes none — and naming one would make an unconnected source's key
+# mandatory configuration for a stack that ingests nothing.
 #
 # Required once a source IS connected: its DAG is scheduled from the moment the
 # spec lands, and a scheduled fetch with no token fails hourly.
-while IFS= read -r token_var; do
-  [[ -n "$token_var" ]] || continue
-  REQUIRED+=("$token_var")
+#
+# ANY `*_env:` key, not just `token_env`. Most sources need exactly one variable,
+# but an OAuth grant needs more than one — sources/youtube.yml names
+# `client_id_env` and `client_secret_env` alongside its `token_env`, because
+# Google's refresh-token exchange takes all three. Matching only `token_env`
+# pushed one of the three and left the instance with a connector that could not
+# authenticate, while `make secrets-push` reported success.
+while IFS= read -r credential_var; do
+  [[ -n "$credential_var" ]] || continue
+  REQUIRED+=("$credential_var")
 done < <(
-  grep -hoE '^[[:space:]]*token_env:[[:space:]]*[A-Za-z_][A-Za-z0-9_]*' \
+  grep -hoE '^[[:space:]]*[a-z_]*_env:[[:space:]]*[A-Za-z_][A-Za-z0-9_]*' \
     "${REPO_ROOT}"/sources/*.yml 2>/dev/null \
     | awk '{ print $2 }' | sort -u
 )

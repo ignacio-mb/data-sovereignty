@@ -20,8 +20,10 @@ env: ## Create .env from .env.example and generate Airflow secrets
 	 else echo ".env already exists, leaving it alone"; fi
 	@bash scripts/gen_secrets.sh .env
 	@echo "Now fill in MB_PREMIUM_EMBEDDING_TOKEN and MB_ADMIN_PASSWORD."
-	@echo "sources/ holds every connected source. swoogo ships connected — delete"
-	@echo "sources/swoogo.yml unless it is yours, or its DAG fails hourly."
+	@echo "sources/ holds every connected source. swoogo, customerio, lever and"
+	@echo "youtube ship connected — delete those specs unless they are yours, or"
+	@echo "their DAGs fail hourly. youtube also needs a one-time browser consent:"
+	@echo "  uv run python scripts/youtube_oauth_setup.py"
 
 # Every credential in docker-compose.yml interpolates from .env, and the
 # containers read it wholesale so a source's token needs no compose edit. Without
