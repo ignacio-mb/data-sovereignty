@@ -80,7 +80,7 @@ class TestWhatThisCheckoutShips:
 
     def test_the_connected_sources_are_the_ones_we_expect(self):
         specs = sorted(p.stem for p in (REPO / "sources").glob("*.yml"))
-        assert specs == ["customerio", "lever", "swoogo"], (
+        assert specs == ["customerio", "lever", "swoogo", "youtube"], (
             f"sources/ holds {specs}. Every spec here ships connected: it schedules "
             f"an unpaused DAG and needs its token_env set, on every clone of "
             f"this repo. If that is intended, update this list and the description "

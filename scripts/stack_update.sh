@@ -349,8 +349,15 @@ mapfile -t COMPOSE_REQUIRED < <(
 # because every compose variable is present, and the only symptom is an hourly
 # DAG failing on `<NAME> is not set` — which is precisely what happened the
 # first time Swoogo reached this instance.
+#
+# ANY `*_env:` key, matching secrets_push.sh exactly. An OAuth grant needs more
+# than one variable — sources/youtube.yml names `client_id_env` and
+# `client_secret_env` beside its `token_env` — and matching only `token_env`
+# would verify one of the three while the deploy reported success. That is the
+# same drift this comment claims cannot happen, so the two greps have to stay
+# character-for-character identical.
 mapfile -t SOURCE_REQUIRED < <(
-  grep -hoE '^[[:space:]]*token_env:[[:space:]]*[A-Za-z_][A-Za-z0-9_]*' sources/*.yml 2>/dev/null \
+  grep -hoE '^[[:space:]]*[a-z_]*_env:[[:space:]]*[A-Za-z_][A-Za-z0-9_]*' sources/*.yml 2>/dev/null \
     | awk '{ print $2 }' | sort -u
 )
 

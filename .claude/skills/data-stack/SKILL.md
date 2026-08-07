@@ -10,8 +10,9 @@ This repo is a self-hosted ingestion pipeline: any REST API → ClickHouse, with
 Metabase hosted on top to read the result. You drive it through `make` targets and
 two CLIs, never by clicking in the Metabase UI.
 
-**Everything in `sources/` is connected and live**, and Swoogo ships that way — a
-fork that is not ours should delete `sources/swoogo.yml`. Run `make sources` before
+**Everything in `sources/` is connected and live**, and Swoogo, Customer.io, Lever
+and YouTube all ship that way — a fork that is not ours should delete them. Run
+`make sources` before
 almost anything else. If it lists nothing, the honest answer to most questions is
 "no source is connected yet" and the next step is `add-source`; if it lists a source
 whose credential is unset, its hourly DAG is failing and that is usually the real
